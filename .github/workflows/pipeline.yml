@@ -1,0 +1,36 @@
+﻿name: FSDC Data Pipeline
+
+on:
+  # Run manually from GitHub UI (for testing)
+  workflow_dispatch:
+  
+  # Schedule (we'll add this later after testing)
+  # schedule:
+  #   - cron: '0 * * * *'  # Every hour
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run Data Pipeline
+      env:
+        TIDB_HOST: ${{ secrets.TIDB_HOST }}
+        TIDB_PORT: ${{ secrets.TIDB_PORT }}
+        TIDB_USER: ${{ secrets.TIDB_USER }}
+        TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
+        TIDB_DATABASE: ${{ secrets.TIDB_DATABASE }}
+      run: |
+        echo "Starting FSDC Pipeline..."
+        node src/main.js
