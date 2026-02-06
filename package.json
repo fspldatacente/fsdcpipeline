@@ -1,22 +1,8 @@
 ﻿{
   "name": "fsdcpipeline",
   "version": "1.0.0",
-  "description": "FSDC Data Pipeline for fetching and storing data in TiDB",
-  "main": "src/index.js",
-  "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
-    "test": "echo \"No tests yet\" && exit 0"
-  },
-  "keywords": ["data-pipeline", "tidb", "fsdc"],
-  "author": "Haitham",
-  "license": "MIT",
   "type": "module",
   "dependencies": {
-    "dotenv": "^16.3.1",
     "mysql2": "^3.6.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
   }
 }
