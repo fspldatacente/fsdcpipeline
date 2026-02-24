@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FSDC Pipeline Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 FSDC Data Pipeline</h1>
+            <p class="subtitle">Automated data pipeline for RSL Fantasy Statistics</p>
+        </header>
+        
+        <main>
+            <section class="status-card">
+                <h2>📊 Pipeline Status</h2>
+                <div class="status-grid">
+                    <div class="stat">
+                        <span class="label">Last Run:</span>
+                        <span class="value" id="last-run">Checking...</span>
+                    </div>
+                    <div class="stat">
+                        <span class="label">Status:</span>
+                        <span class="value status-badge" id="status">Checking...</span>
+                    </div>
+                    <div class="stat">
+                        <span class="label">Next Run:</span>
+                        <span class="value" id="next-run">Scheduled hourly</span>
+                    </div>
+                </div>
+            </section>
+            
+            <section class="actions-card">
+                <h2>⚡ Actions</h2>
+                <div class="buttons">
+                    <button id="run-now-btn" class="btn btn-primary">Run Pipeline Now</button>
+                    <button id="view-logs-btn" class="btn btn-secondary">View Logs</button>
+                    <button id="refresh-btn" class="btn btn-secondary">Refresh Status</button>
+                </div>
+            </section>
+            
+            <section class="data-card">
+                <h2>📈 Data Overview</h2>
+                <div class="data-grid" id="data-overview">
+                    <p>Loading data statistics...</p>
+                </div>
+            </section>
+        </main>
+        
+        <footer>
+            <p>Pipeline runs hourly via GitHub Actions | Data stored in TiDB</p>
+        </footer>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
