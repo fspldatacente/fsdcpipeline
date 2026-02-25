@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fixtures - FSDC Pipeline</title>
+    <link rel="stylesheet" href="../style.css">
+    <link rel="stylesheet" href="fixtures.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📅 Fixtures & Results</h1>
+            <nav>
+                <a href="../index.html">Dashboard</a>
+                <a href="fixtures.html" class="active">Fixtures</a>
+                <a href="../players/players.html">Players</a>
+            </nav>
+        </header>
+        
+        <main>
+            <div class="fixture-tabs">
+                <button class="fixture-tab active" id="tab-finished">Finished Matches</button>
+                <button class="fixture-tab" id="tab-unfinished">Upcoming Fixtures</button>
+            </div>
+
+            <div id="finished-content" class="fixture-content active">
+                <div class="table-header">
+                    <span>Round</span>
+                    <span>Home Team</span>
+                    <span>Score</span>
+                    <span>Away Team</span>
+                    <span>Status</span>
+                </div>
+                <div id="finished-table" class="fixture-table">
+                    <div class="loading">Loading finished matches...</div>
+                </div>
+            </div>
+
+            <div id="unfinished-content" class="fixture-content">
+                <div class="table-header">
+                    <span>Round</span>
+                    <span>Home Team</span>
+                    <span>Away Team</span>
+                    <span>Kickoff</span>
+                    <span>Status</span>
+                </div>
+                <div id="unfinished-table" class="fixture-table">
+                    <div class="loading">Loading upcoming fixtures...</div>
+                </div>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Data updates hourly via GitHub Actions | Live from TiDB</p>
+        </footer>
+    </div>
+    
+    <script src="fixtures.js"></script>
+</body>
+</html>

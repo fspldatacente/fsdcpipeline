@@ -11,6 +11,11 @@
         <header>
             <h1>🚀 FSDC Data Pipeline</h1>
             <p class="subtitle">Automated data pipeline for RSL Fantasy Statistics</p>
+            <nav>
+                <a href="index.html" class="active">Dashboard</a>
+                <a href="fixtures/fixtures.html">Fixtures</a>
+                <a href="players/players.html">Players</a>
+            </nav>
         </header>
         
         <main>
@@ -40,45 +45,6 @@
                     <button id="run-now-btn" class="btn btn-primary">Run Pipeline Now</button>
                     <button id="view-logs-btn" class="btn btn-secondary">View Logs</button>
                     <button id="refresh-btn" class="btn btn-secondary">Refresh Status</button>
-                </div>
-            </section>
-
-            <!-- Fixtures Card -->
-            <section class="fixtures-card">
-                <div class="fixtures-header">
-                    <h2>📅 Fixtures Data</h2>
-                    <div class="fixture-tabs">
-                        <button class="fixture-tab active" id="tab-finished">Finished Matches</button>
-                        <button class="fixture-tab" id="tab-unfinished">Unfinished Matches</button>
-                    </div>
-                </div>
-
-                <!-- Finished Matches Table -->
-                <div id="finished-content" class="fixture-content active">
-                    <div class="table-header">
-                        <span>Round</span>
-                        <span>Home Team</span>
-                        <span>Score</span>
-                        <span>Away Team</span>
-                        <span>Status</span>
-                    </div>
-                    <div id="finished-table" class="fixture-table">
-                        <div class="loading">Loading finished matches...</div>
-                    </div>
-                </div>
-
-                <!-- Unfinished Matches Table -->
-                <div id="unfinished-content" class="fixture-content">
-                    <div class="table-header">
-                        <span>Round</span>
-                        <span>Home Team</span>
-                        <span>Away Team</span>
-                        <span>Kickoff</span>
-                        <span>Status</span>
-                    </div>
-                    <div id="unfinished-table" class="fixture-table">
-                        <div class="loading">Loading upcoming fixtures...</div>
-                    </div>
                 </div>
             </section>
             

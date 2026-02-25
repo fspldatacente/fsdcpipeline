@@ -1,0 +1,160 @@
+/* fixtures.css - Fixtures Module Specific Styles */
+.fixture-tabs {
+    display: flex;
+    gap: 10px;
+    background: #f3f4f6;
+    padding: 5px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+
+.fixture-tab {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    color: #4b5563;
+    transition: all 0.2s ease;
+}
+
+.fixture-tab:hover {
+    background: #e5e7eb;
+}
+
+.fixture-tab.active {
+    background: #4299e1;
+    color: white;
+}
+
+.fixture-content {
+    display: none;
+}
+
+.fixture-content.active {
+    display: block;
+}
+
+.table-header {
+    display: grid;
+    grid-template-columns: 80px 1.5fr 100px 1.5fr 120px;
+    background: #f8fafc;
+    padding: 12px 15px;
+    border-radius: 8px;
+    font-weight: 600;
+    color: #4a5568;
+    border: 1px solid #e2e8f0;
+    margin-bottom: 10px;
+}
+
+#unfinished-content .table-header {
+    grid-template-columns: 80px 1.5fr 1.5fr 150px 120px;
+}
+
+.fixture-table {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: white;
+}
+
+.fixture-row {
+    display: grid;
+    grid-template-columns: 80px 1.5fr 100px 1.5fr 120px;
+    padding: 12px 15px;
+    border-bottom: 1px solid #e2e8f0;
+    align-items: center;
+}
+
+#unfinished-content .fixture-row {
+    grid-template-columns: 80px 1.5fr 1.5fr 150px 120px;
+}
+
+.fixture-row:last-child {
+    border-bottom: none;
+}
+
+.fixture-row:hover {
+    background: #f8fafc;
+}
+
+.score {
+    font-weight: 600;
+    color: #2d3748;
+}
+
+.score-winner {
+    color: #38a169;
+    font-weight: 700;
+}
+
+.score-draw {
+    color: #718096;
+}
+
+.status-badge-finished {
+    background: #c6f6d5;
+    color: #22543d;
+    padding: 4px 8px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    display: inline-block;
+    text-align: center;
+}
+
+.status-badge-unfinished {
+    background: #feebc8;
+    color: #744210;
+    padding: 4px 8px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    display: inline-block;
+    text-align: center;
+}
+
+.kickoff-time {
+    color: #4a5568;
+    font-size: 0.9rem;
+}
+
+.fixture-table .loading,
+.fixture-table .empty-state {
+    padding: 40px;
+    text-align: center;
+    color: #718096;
+    font-style: italic;
+}
+
+.team-name {
+    font-weight: 500;
+    color: #2d3748;
+}
+
+@media (max-width: 768px) {
+    .fixture-tabs {
+        width: 100%;
+    }
+    
+    .fixture-tab {
+        flex: 1;
+        text-align: center;
+    }
+    
+    .table-header,
+    .fixture-row {
+        font-size: 0.85rem;
+        padding: 10px 8px;
+    }
+    
+    .table-header,
+    #unfinished-content .table-header,
+    .fixture-row,
+    #unfinished-content .fixture-row {
+        grid-template-columns: 60px 1fr 70px 1fr 100px;
+    }
+}
