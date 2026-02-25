@@ -2,20 +2,8 @@
 
 on:
   schedule:
-    # Run every hour at minute 15 (to avoid peak times)
     - cron: '15 * * * *'
   workflow_dispatch:
-    inputs:
-      run-finished:
-        description: 'Run finished matches fetch'
-        required: false
-        default: 'true'
-        type: boolean
-      run-unfinished:
-        description: 'Run unfinished fixtures fetch'
-        required: false
-        default: 'true'
-        type: boolean
 
 jobs:
   fixtures-pipeline:
@@ -41,29 +29,8 @@ jobs:
         TIDB_PORT: ${{ secrets.TIDB_PORT }}
         TIDB_USER: ${{ secrets.TIDB_USER }}
         TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
-        TIDB_DATABASE: ${{ secrets.TIDB_DATABASE }}
       run: |
         echo "🚀 Starting FSDC Fixtures Pipeline"
         echo "Started at: $(date)"
-        echo "----------------------------------------"
-        
-        # Run the fixtures orchestrator
         node src/fixtures/index.js
-        
-        echo "----------------------------------------"
         echo "Completed at: $(date)"
-    
-    - name: Send notification on failure (optional)
-      if: failure()
-      run: |
-        echo "⚠️ Pipeline failed at $(date)"
-        # You can add Slack/Discord webhook here later
-
-  # Optional: Generate JSON files for website (we'll add this later)
-  # generate-website-data:
-  #   needs: fixtures-pipeline
-  #   runs-on: ubuntu-latest
-  #   if: success()
-  #   steps:
-  #     - name: Generate JSON files for website
-  #       run: node src/generate-website-data.js
