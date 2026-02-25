@@ -14,6 +14,7 @@
         </header>
         
         <main>
+            <!-- Status Section (Keep existing) -->
             <section class="status-card">
                 <h2>📊 Pipeline Status</h2>
                 <div class="status-grid">
@@ -32,6 +33,7 @@
                 </div>
             </section>
             
+            <!-- Actions Section (Keep existing) -->
             <section class="actions-card">
                 <h2>⚡ Actions</h2>
                 <div class="buttons">
@@ -40,7 +42,47 @@
                     <button id="refresh-btn" class="btn btn-secondary">Refresh Status</button>
                 </div>
             </section>
+
+            <!-- NEW: Fixtures Tab Section -->
+            <section class="fixtures-card">
+                <div class="fixtures-header">
+                    <h2>📅 Fixtures Data</h2>
+                    <div class="fixture-tabs">
+                        <button class="fixture-tab active" id="tab-finished">Finished Matches</button>
+                        <button class="fixture-tab" id="tab-unfinished">Unfinished Matches</button>
+                    </div>
+                </div>
+
+                <!-- Finished Matches Table -->
+                <div id="finished-content" class="fixture-content active">
+                    <div class="table-header">
+                        <span>Round</span>
+                        <span>Home Team</span>
+                        <span>Score</span>
+                        <span>Away Team</span>
+                        <span>Status</span>
+                    </div>
+                    <div id="finished-table" class="fixture-table">
+                        <div class="loading">Loading finished matches...</div>
+                    </div>
+                </div>
+
+                <!-- Unfinished Matches Table -->
+                <div id="unfinished-content" class="fixture-content">
+                    <div class="table-header">
+                        <span>Round</span>
+                        <span>Home Team</span>
+                        <span>Away Team</span>
+                        <span>Kickoff</span>
+                        <span>Status</span>
+                    </div>
+                    <div id="unfinished-table" class="fixture-table">
+                        <div class="loading">Loading upcoming fixtures...</div>
+                    </div>
+                </div>
+            </section>
             
+            <!-- Data Overview Section (Keep existing) -->
             <section class="data-card">
                 <h2>📈 Data Overview</h2>
                 <div class="data-grid" id="data-overview">

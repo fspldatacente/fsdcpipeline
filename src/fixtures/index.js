@@ -1,0 +1,102 @@
+// src/fixtures/index.js
+// Orchestrator that runs both finished and unfinished fixtures fetchers
+// This is what GitHub Actions will call
+
+import runFinishedMatchesFetch from './fetch-finished.js';
+import runUnfinishedFixturesFetch from './fetch-unfinished.js';
+
+/**
+ * Run both fixtures fetchers
+ * They can run in parallel to save time
+ */
+async function runAllFixturesFetchers() {
+    const timestamp = Date.now();
+    const finishedRunId = `finished-${timestamp}`;
+    const unfinishedRunId = `unfinished-${timestamp}`;
+    
+    console.log('='.repeat(60));
+    console.log('🚀 FSDC FIXTURES PIPELINE');
+    console.log('='.repeat(60));
+    console.log(`Start time: ${new Date().toISOString()}`);
+    console.log(`Finished Run ID: ${finishedRunId}`);
+    console.log(`Unfinished Run ID: ${unfinishedRunId}`);
+    console.log('-'.repeat(60));
+    
+    const startTime = Date.now();
+    
+    try {
+        // Run both fetchers in parallel for speed
+        const [finishedResult, unfinishedResult] = await Promise.allSettled([
+            runFinishedMatchesFetch(finishedRunId),
+            runUnfinishedFixturesFetch(unfinishedRunId)
+        ]);
+        
+        console.log('-'.repeat(60));
+        console.log('📊 PIPELINE RESULTS:');
+        
+        // Process finished matches result
+        if (finishedResult.status === 'fulfilled') {
+            console.log('\n✅ FINISHED MATCHES:');
+            console.log(`   Success: ${finishedResult.value.success}`);
+            console.log(`   Count: ${finishedResult.value.count}`);
+            if (finishedResult.value.inserted !== undefined) {
+                console.log(`   Inserted: ${finishedResult.value.inserted}`);
+                console.log(`   Updated: ${finishedResult.value.updated}`);
+            }
+        } else {
+            console.log('\n❌ FINISHED MATCHES FAILED:');
+            console.log(`   Error: ${finishedResult.reason.message}`);
+        }
+        
+        // Process unfinished fixtures result
+        if (unfinishedResult.status === 'fulfilled') {
+            console.log('\n✅ UNFINISHED FIXTURES:');
+            console.log(`   Success: ${unfinishedResult.value.success}`);
+            console.log(`   Count: ${unfinishedResult.value.count}`);
+            if (unfinishedResult.value.inserted !== undefined) {
+                console.log(`   Inserted: ${unfinishedResult.value.inserted}`);
+                console.log(`   Updated: ${unfinishedResult.value.updated}`);
+            }
+        } else {
+            console.log('\n❌ UNFINISHED FIXTURES FAILED:');
+            console.log(`   Error: ${unfinishedResult.reason.message}`);
+        }
+        
+        const endTime = Date.now();
+        const durationSeconds = ((endTime - startTime) / 1000).toFixed(2);
+        
+        console.log('-'.repeat(60));
+        console.log(`⏱️  Total duration: ${durationSeconds} seconds`);
+        console.log('='.repeat(60));
+        
+        // Return overall status
+        const overallSuccess = 
+            finishedResult.status === 'fulfilled' && 
+            unfinishedResult.status === 'fulfilled';
+        
+        return {
+            success: overallSuccess,
+            finished: finishedResult.status === 'fulfilled' ? finishedResult.value : { error: finishedResult.reason.message },
+            unfinished: unfinishedResult.status === 'fulfilled' ? unfinishedResult.value : { error: unfinishedResult.reason.message },
+            duration: durationSeconds
+        };
+        
+    } catch (error) {
+        console.error('💥 Fatal error in fixtures pipeline:', error);
+        throw error;
+    }
+}
+
+// If running directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+    runAllFixturesFetchers()
+        .then(result => {
+            process.exit(result.success ? 0 : 1);
+        })
+        .catch(error => {
+            console.error(error);
+            process.exit(1);
+        });
+}
+
+export default runAllFixturesFetchers;

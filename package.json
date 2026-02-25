@@ -1,14 +1,23 @@
 ﻿{
   "name": "fsdcpipeline",
   "version": "1.0.0",
+  "description": "FSDC Data Pipeline - Fetches fixtures and stats from 365scores and stores in TiDB",
+  "main": "src/fixtures/index.js",
   "type": "module",
+  "scripts": {
+    "fixtures": "node src/fixtures/index.js",
+    "fixtures:finished": "node src/fixtures/fetch-finished.js",
+    "fixtures:unfinished": "node src/fixtures/fetch-unfinished.js",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": ["data-pipeline", "tidb", "fixtures", "365scores", "fsdc"],
+  "author": "Haitham",
+  "license": "MIT",
+  "dependencies": {
+    "mysql2": "^3.9.0",
+    "node-fetch": "^3.3.2"
+  },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "dependencies": {
-    "mysql2": "^3.6.0"
-  },
-  "scripts": {
-    "start": "node src/main.js"
   }
 }
