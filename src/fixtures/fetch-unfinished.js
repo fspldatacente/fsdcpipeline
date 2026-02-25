@@ -8,7 +8,7 @@ const BASE_URL = 'https://webws.365scores.com';
 const COMPETITION_ID = 649;
 const SEASON_NUM = 53;
 const HEADERS = {
-    'User-Agent': 'FSDC-Pipeline/1.0',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json'
 };
 
@@ -17,33 +17,43 @@ async function fetchUnfinishedFixtures() {
     
     const fixturesUrl = '/web/games/fixtures/?appTypeId=5&langId=1&timezoneName=UTC&userCountryId=1&competitions=649';
     let allUnfinishedFixtures = [];
-    let nextPage = fixturesUrl;
+    let currentPage = fixturesUrl;
     let pageCount = 0;
     
     try {
-        while (nextPage) {
+        while (currentPage) {
             pageCount++;
             console.log(`   Fetching page ${pageCount}...`);
+            console.log(`   URL: ${BASE_URL}${currentPage}`);
             
-            const response = await fetch(`${BASE_URL}${nextPage}`, { headers: HEADERS });
+            const response = await fetch(`${BASE_URL}${currentPage}`, { headers: HEADERS });
             
             if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                console.error(`   HTTP error! status: ${response.status}`);
+                break;
             }
             
             const data = await response.json();
             
+            // Log the response structure to debug
+            console.log(`   Response keys:`, Object.keys(data));
+            console.log(`   Has games array:`, Array.isArray(data.games));
+            console.log(`   Games count:`, data.games?.length || 0);
+            
             if (data.games && Array.isArray(data.games)) {
-                const seasonGames = data.games.filter(game => 
-                    game.seasonNum === SEASON_NUM && 
-                    game.competitions?.some(comp => comp.id === COMPETITION_ID)
-                );
+                // Don't filter by seasonNum - just take all games for this competition
+                allUnfinishedFixtures = [...allUnfinishedFixtures, ...data.games];
+                console.log(`   Found ${data.games.length} fixtures in this page`);
                 
-                allUnfinishedFixtures = [...allUnfinishedFixtures, ...seasonGames];
-                console.log(`   Found ${seasonGames.length} upcoming fixtures in this page`);
+                // Log first game structure to understand it
+                if (pageCount === 1 && data.games.length > 0) {
+                    console.log('   Sample fixture structure:', JSON.stringify(data.games[0], null, 2).substring(0, 500) + '...');
+                }
             }
             
-            nextPage = data.paging?.nextPage || null;
+            // For fixtures, we use nextPage
+            currentPage = data.paging?.nextPage || null;
+            console.log(`   Next page:`, currentPage || 'none');
         }
         
         console.log(`✅ Total upcoming fixtures fetched: ${allUnfinishedFixtures.length}`);
@@ -56,10 +66,11 @@ async function fetchUnfinishedFixtures() {
 }
 
 function transformUnfinishedFixture(game) {
-    const homeTeam = game.homeCompetitor?.name || 'Unknown';
-    const awayTeam = game.awayCompetitor?.name || 'Unknown';
-    const roundNum = game.roundNum || 0;
-    const kickoffTime = game.startTime ? new Date(game.startTime) : new Date();
+    // Check different possible property names
+    const homeTeam = game.homeCompetitor?.name || game.home_team || 'Unknown';
+    const awayTeam = game.awayCompetitor?.name || game.away_team || 'Unknown';
+    const roundNum = game.roundNum || game.round_num || 0;
+    const kickoffTime = game.startTime || game.kickoff_time || game.date || new Date().toISOString();
     const status = game.status || 'scheduled';
     const fixtureId = game.id || `${roundNum}_${homeTeam}_${awayTeam}`.replace(/\s+/g, '_');
     
@@ -68,7 +79,7 @@ function transformUnfinishedFixture(game) {
         round_num: roundNum,
         home_team: homeTeam,
         away_team: awayTeam,
-        kickoff_time: kickoffTime,
+        kickoff_time: new Date(kickoffTime),
         status: status,
         full_data: game
     };

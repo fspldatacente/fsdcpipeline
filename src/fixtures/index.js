@@ -33,8 +33,10 @@ async function runAllFixturesFetchers() {
         if (finishedResult.status === 'fulfilled') {
             console.log('\n✅ FINISHED MATCHES:');
             console.log(`   Total fetched: ${finishedResult.value.count}`);
-            if (finishedResult.value.addedToUnprocessed !== undefined) {
-                console.log(`   Added to unprocessed queue: ${finishedResult.value.addedToUnprocessed}`);
+            if (finishedResult.value.inserted !== undefined) {
+                console.log(`   Inserted: ${finishedResult.value.inserted}`);
+                console.log(`   Updated: ${finishedResult.value.updated}`);
+                console.log(`   Errors: ${finishedResult.value.errors}`);
             }
         } else {
             console.log('\n❌ FINISHED MATCHES FAILED:');
@@ -45,6 +47,11 @@ async function runAllFixturesFetchers() {
         if (unfinishedResult.status === 'fulfilled') {
             console.log('\n✅ UNFINISHED FIXTURES:');
             console.log(`   Total fetched: ${unfinishedResult.value.count}`);
+            if (unfinishedResult.value.inserted !== undefined) {
+                console.log(`   Inserted: ${unfinishedResult.value.inserted}`);
+                console.log(`   Updated: ${unfinishedResult.value.updated}`);
+                console.log(`   Errors: ${unfinishedResult.value.errors}`);
+            }
         } else {
             console.log('\n❌ UNFINISHED FIXTURES FAILED:');
             console.log(`   Error: ${unfinishedResult.reason.message}`);
