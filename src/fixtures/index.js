@@ -1,14 +1,9 @@
 // src/fixtures/index.js
 // Orchestrator that runs both finished and unfinished fixtures fetchers
-// This is what GitHub Actions will call
 
 import runFinishedMatchesFetch from './fetch-finished.js';
 import runUnfinishedFixturesFetch from './fetch-unfinished.js';
 
-/**
- * Run both fixtures fetchers
- * They can run in parallel to save time
- */
 async function runAllFixturesFetchers() {
     const timestamp = Date.now();
     const finishedRunId = `finished-${timestamp}`;
@@ -25,7 +20,7 @@ async function runAllFixturesFetchers() {
     const startTime = Date.now();
     
     try {
-        // Run both fetchers in parallel for speed
+        // Run both fetchers in parallel
         const [finishedResult, unfinishedResult] = await Promise.allSettled([
             runFinishedMatchesFetch(finishedRunId),
             runUnfinishedFixturesFetch(unfinishedRunId)
@@ -37,11 +32,9 @@ async function runAllFixturesFetchers() {
         // Process finished matches result
         if (finishedResult.status === 'fulfilled') {
             console.log('\n✅ FINISHED MATCHES:');
-            console.log(`   Success: ${finishedResult.value.success}`);
-            console.log(`   Count: ${finishedResult.value.count}`);
-            if (finishedResult.value.inserted !== undefined) {
-                console.log(`   Inserted: ${finishedResult.value.inserted}`);
-                console.log(`   Updated: ${finishedResult.value.updated}`);
+            console.log(`   Total fetched: ${finishedResult.value.count}`);
+            if (finishedResult.value.addedToUnprocessed !== undefined) {
+                console.log(`   Added to unprocessed queue: ${finishedResult.value.addedToUnprocessed}`);
             }
         } else {
             console.log('\n❌ FINISHED MATCHES FAILED:');
@@ -51,12 +44,7 @@ async function runAllFixturesFetchers() {
         // Process unfinished fixtures result
         if (unfinishedResult.status === 'fulfilled') {
             console.log('\n✅ UNFINISHED FIXTURES:');
-            console.log(`   Success: ${unfinishedResult.value.success}`);
-            console.log(`   Count: ${unfinishedResult.value.count}`);
-            if (unfinishedResult.value.inserted !== undefined) {
-                console.log(`   Inserted: ${unfinishedResult.value.inserted}`);
-                console.log(`   Updated: ${unfinishedResult.value.updated}`);
-            }
+            console.log(`   Total fetched: ${unfinishedResult.value.count}`);
         } else {
             console.log('\n❌ UNFINISHED FIXTURES FAILED:');
             console.log(`   Error: ${unfinishedResult.reason.message}`);
@@ -69,7 +57,6 @@ async function runAllFixturesFetchers() {
         console.log(`⏱️  Total duration: ${durationSeconds} seconds`);
         console.log('='.repeat(60));
         
-        // Return overall status
         const overallSuccess = 
             finishedResult.status === 'fulfilled' && 
             unfinishedResult.status === 'fulfilled';

@@ -1,22 +1,17 @@
 // src/fixtures/fetch-finished.js
-// Fetches finished matches (results) from 365scores API
-// Stores them in the finished_matches table in TiDB
+// Fetches finished matches from 365scores API
+// Stores them in finished_matches AND adds to unprocessed_fixtures
 
 import dbClient from '../database/tidb-client.js';
 
-// 365scores API configuration
 const BASE_URL = 'https://webws.365scores.com';
-const COMPETITION_ID = 649; // Saudi Pro League
-const SEASON_NUM = 53; // Current season
+const COMPETITION_ID = 649;
+const SEASON_NUM = 53;
 const HEADERS = {
     'User-Agent': 'FSDC-Pipeline/1.0',
     'Accept': 'application/json'
 };
 
-/**
- * Fetch finished matches from 365scores
- * Uses the /results endpoint which returns completed games
- */
 async function fetchFinishedMatches() {
     console.log('📥 Fetching finished matches from 365scores...');
     
@@ -26,7 +21,6 @@ async function fetchFinishedMatches() {
     let pageCount = 0;
     
     try {
-        // Paginate through all results
         while (nextPage) {
             pageCount++;
             console.log(`   Fetching page ${pageCount}...`);
@@ -39,9 +33,7 @@ async function fetchFinishedMatches() {
             
             const data = await response.json();
             
-            // Extract games from response
             if (data.games && Array.isArray(data.games)) {
-                // Filter for current season and competition
                 const seasonGames = data.games.filter(game => 
                     game.seasonNum === SEASON_NUM && 
                     game.competitions?.some(comp => comp.id === COMPETITION_ID)
@@ -51,7 +43,6 @@ async function fetchFinishedMatches() {
                 console.log(`   Found ${seasonGames.length} finished matches in this page`);
             }
             
-            // Check for next page
             nextPage = data.paging?.nextPage || null;
         }
         
@@ -64,28 +55,14 @@ async function fetchFinishedMatches() {
     }
 }
 
-/**
- * Transform 365scores game data to our database schema
- */
 function transformFinishedMatch(game) {
-    // Extract home and away teams
     const homeTeam = game.homeCompetitor?.name || 'Unknown';
     const awayTeam = game.awayCompetitor?.name || 'Unknown';
-    
-    // Extract scores
     const homeScore = game.homeScore || 0;
     const awayScore = game.awayScore || 0;
-    
-    // Extract round number
     const roundNum = game.roundNum || 0;
-    
-    // Extract match date
     const matchDate = game.startTime ? new Date(game.startTime) : new Date();
-    
-    // Determine status
     const status = game.status || 'finished';
-    
-    // Create fixture ID (combine round + teams to create a unique ID)
     const fixtureId = game.id || `${roundNum}_${homeTeam}_${awayTeam}`.replace(/\s+/g, '_');
     
     return {
@@ -97,32 +74,30 @@ function transformFinishedMatch(game) {
         away_score: awayScore,
         match_date: matchDate,
         status: status,
-        full_data: game // Store complete original data as JSON
+        full_data: game  // Keep full raw data for reference
     };
 }
 
-/**
- * Save finished matches to TiDB
- */
 async function saveFinishedMatches(matches) {
     console.log('💾 Saving finished matches to TiDB...');
     
     let inserted = 0;
     let updated = 0;
+    let addedToUnprocessed = 0;
+    let skipped = 0;
     let errors = 0;
     
     for (const game of matches) {
         try {
             const match = transformFinishedMatch(game);
             
-            // Check if match already exists
+            // 1. Save/Update in finished_matches table
             const existing = await dbClient.query(
                 'SELECT fixture_id FROM finished_matches WHERE fixture_id = ?',
                 [match.fixture_id]
             );
             
             if (existing.length > 0) {
-                // Update existing match
                 await dbClient.query(
                     `UPDATE finished_matches 
                      SET home_score = ?, away_score = ?, match_date = ?, 
@@ -135,7 +110,6 @@ async function saveFinishedMatches(matches) {
                 );
                 updated++;
             } else {
-                // Insert new match
                 await dbClient.query(
                     `INSERT INTO finished_matches 
                      (fixture_id, round_num, home_team, away_team, home_score, away_score, match_date, status, full_data)
@@ -149,19 +123,49 @@ async function saveFinishedMatches(matches) {
                 inserted++;
             }
             
+            // 2. Check if this fixture is already in unprocessed_fixtures
+            const unprocessedCheck = await dbClient.query(
+                'SELECT fixture_id FROM unprocessed_fixtures WHERE fixture_id = ?',
+                [match.fixture_id]
+            );
+            
+            // 3. Check if it's already in processed_fixtures (already done)
+            const processedCheck = await dbClient.query(
+                'SELECT fixture_id FROM processed_fixtures WHERE fixture_id = ?',
+                [match.fixture_id]
+            );
+            
+            // 4. If not in unprocessed AND not in processed, add to unprocessed
+            if (unprocessedCheck.length === 0 && processedCheck.length === 0) {
+                await dbClient.query(
+                    `INSERT INTO unprocessed_fixtures 
+                     (fixture_id, round_num, home_team, away_team, home_score, away_score, match_date, full_data)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        match.fixture_id, match.round_num, match.home_team, match.away_team,
+                        match.home_score, match.away_score, match.match_date,
+                        JSON.stringify(match.full_data)
+                    ]
+                );
+                addedToUnprocessed++;
+            } else if (processedCheck.length > 0) {
+                skipped++;
+            }
+            
         } catch (error) {
-            console.error(`   Error saving match:`, error.message);
+            console.error(`   Error saving match ${game.id}:`, error.message);
             errors++;
         }
     }
     
-    console.log(`   ✅ Inserted: ${inserted}, Updated: ${updated}, Errors: ${errors}`);
-    return { inserted, updated, errors };
+    console.log(`   📊 Finished matches: Inserted ${inserted}, Updated ${updated}`);
+    console.log(`   📋 Unprocessed queue: Added ${addedToUnprocessed} new fixtures`);
+    console.log(`   ⏭️  Skipped (already processed): ${skipped}`);
+    console.log(`   ❌ Errors: ${errors}`);
+    
+    return { inserted, updated, addedToUnprocessed, skipped, errors };
 }
 
-/**
- * Main function to run the finished matches fetch
- */
 export default async function runFinishedMatchesFetch(runId) {
     console.log('\n🏁 Starting Finished Matches Fetch...');
     console.log(`   Run ID: ${runId}`);
@@ -170,9 +174,7 @@ export default async function runFinishedMatchesFetch(runId) {
     let syncLogId = null;
     
     try {
-        // Initialize database connection and schema
         await dbClient.initialize();
-        await dbClient.initializeSchema();
         
         // Log start of sync
         const syncLogResult = await dbClient.query(
@@ -181,29 +183,19 @@ export default async function runFinishedMatchesFetch(runId) {
         );
         syncLogId = syncLogResult.insertId;
         
-        // Fetch finished matches
         const finishedMatches = await fetchFinishedMatches();
         
         if (finishedMatches.length === 0) {
             console.log('⚠️ No finished matches found');
-            
-            // Update sync log
             await dbClient.query(
                 `UPDATE sync_log SET status = ?, completed_at = NOW() WHERE id = ?`,
                 ['success', syncLogId]
             );
-            
-            return {
-                success: true,
-                count: 0,
-                message: 'No finished matches found'
-            };
+            return { success: true, count: 0 };
         }
         
-        // Save to database
         const stats = await saveFinishedMatches(finishedMatches);
         
-        // Update sync log with stats
         await dbClient.query(
             `UPDATE sync_log 
              SET status = ?, completed_at = NOW(), finished_fetched = ?
@@ -211,21 +203,14 @@ export default async function runFinishedMatchesFetch(runId) {
             ['success', finishedMatches.length, syncLogId]
         );
         
-        console.log(`✅ Finished matches fetch completed successfully`);
-        
         return {
             success: true,
             count: finishedMatches.length,
-            inserted: stats.inserted,
-            updated: stats.updated,
-            errors: stats.errors,
-            runId
+            ...stats
         };
         
     } catch (error) {
         console.error('❌ Finished matches fetch failed:', error.message);
-        
-        // Update sync log with error
         if (syncLogId) {
             await dbClient.query(
                 `UPDATE sync_log 
@@ -234,24 +219,8 @@ export default async function runFinishedMatchesFetch(runId) {
                 ['failed', error.message.substring(0, 500), syncLogId]
             );
         }
-        
         throw error;
     } finally {
-        // Close database connection
         await dbClient.close();
     }
-}
-
-// If running directly (not imported)
-if (import.meta.url === `file://${process.argv[1]}`) {
-    const runId = `finished-${Date.now()}`;
-    runFinishedMatchesFetch(runId)
-        .then(result => {
-            console.log('\n📊 Summary:', result);
-            process.exit(0);
-        })
-        .catch(error => {
-            console.error('\n💥 Fatal error:', error);
-            process.exit(1);
-        });
 }
