@@ -1,6 +1,6 @@
 // src/fixtures/fetch-finished.js
 // Fetches finished matches from 365scores API
-// Stores them in finished_matches AND adds to unprocessed_fixtures
+// Stores them in finished_matches AND adds to unprocessed_fixtures with status tracking
 
 import dbClient from '../database/tidb-client.js';
 
@@ -38,6 +38,7 @@ async function fetchFinishedMatches() {
             console.log(`   Response keys:`, Object.keys(data));
             console.log(`   Has games array:`, Array.isArray(data.games));
             console.log(`   Games count:`, data.games?.length || 0);
+            console.log(`   Total pages available:`, data.paging?.totalPages || 1);
             
             if (data.games && Array.isArray(data.games)) {
                 allFinishedMatches = [...allFinishedMatches, ...data.games];
@@ -64,7 +65,6 @@ async function fetchFinishedMatches() {
 function transformFinishedMatch(game) {
     const homeTeam = game.homeCompetitor?.name || 'Unknown';
     const awayTeam = game.awayCompetitor?.name || 'Unknown';
-    // FIXED: Scores are inside homeCompetitor and awayCompetitor objects
     const homeScore = game.homeCompetitor?.score || 0;
     const awayScore = game.awayCompetitor?.score || 0;
     const roundNum = game.roundNum || 0;
@@ -142,7 +142,13 @@ async function saveFinishedMatches(matches) {
                 [match.fixture_id]
             );
             
-            // 4. If not in unprocessed AND not in processed, add to unprocessed
+            // 4. Check if status record already exists
+            const statusCheck = await dbClient.query(
+                'SELECT fixture_id FROM match_processing_status WHERE fixture_id = ?',
+                [match.fixture_id]
+            );
+            
+            // 5. If not in unprocessed AND not in processed, add to unprocessed
             if (unprocessedCheck.length === 0 && processedCheck.length === 0) {
                 await dbClient.query(
                     `INSERT INTO unprocessed_fixtures 
@@ -154,6 +160,23 @@ async function saveFinishedMatches(matches) {
                         JSON.stringify(match.full_data)
                     ]
                 );
+                
+                // 6. Create status record if it doesn't exist
+                if (statusCheck.length === 0) {
+                    await dbClient.query(
+                        `INSERT INTO match_processing_status 
+                         (fixture_id, round_num, home_team, away_team, match_date, overall_status)
+                         VALUES (?, ?, ?, ?, ?, 'pending')`,
+                        [
+                            match.fixture_id, 
+                            match.round_num, 
+                            match.home_team, 
+                            match.away_team, 
+                            match.match_date
+                        ]
+                    );
+                }
+                
                 addedToUnprocessed++;
             } else if (processedCheck.length > 0) {
                 skipped++;
@@ -167,6 +190,7 @@ async function saveFinishedMatches(matches) {
     
     console.log(`   📊 Finished matches: Inserted ${inserted}, Updated ${updated}`);
     console.log(`   📋 Unprocessed queue: Added ${addedToUnprocessed} new fixtures`);
+    console.log(`   📊 Status records: Created/verified for ${addedToUnprocessed} fixtures`);
     console.log(`   ⏭️  Skipped (already processed): ${skipped}`);
     console.log(`   ❌ Errors: ${errors}`);
     

@@ -1,13 +1,18 @@
 // src/fixtures/index.js
-// Orchestrator that runs both finished and unfinished fixtures fetchers
+// Orchestrator that runs:
+// 1. Fetch finished matches
+// 2. Fetch unfinished fixtures
+// 3. Process one unprocessed fixture for stats
 
 import runFinishedMatchesFetch from './fetch-finished.js';
 import runUnfinishedFixturesFetch from './fetch-unfinished.js';
+import runStatsProcessing from './process-stats.js';
 
 async function runAllFixturesFetchers() {
     const timestamp = Date.now();
     const finishedRunId = `finished-${timestamp}`;
     const unfinishedRunId = `unfinished-${timestamp}`;
+    const processRunId = `process-${timestamp}`;
     
     console.log('='.repeat(60));
     console.log('🚀 FSDC FIXTURES PIPELINE');
@@ -15,24 +20,30 @@ async function runAllFixturesFetchers() {
     console.log(`Start time: ${new Date().toISOString()}`);
     console.log(`Finished Run ID: ${finishedRunId}`);
     console.log(`Unfinished Run ID: ${unfinishedRunId}`);
+    console.log(`Process Run ID: ${processRunId}`);
     console.log('-'.repeat(60));
     
     const startTime = Date.now();
     
     try {
-        // Run both fetchers in parallel
+        // Step 1 & 2: Run both fetchers in parallel
+        console.log('\n📥 STEP 1 & 2: Fetching fixtures...');
         const [finishedResult, unfinishedResult] = await Promise.allSettled([
             runFinishedMatchesFetch(finishedRunId),
             runUnfinishedFixturesFetch(unfinishedRunId)
         ]);
         
         console.log('-'.repeat(60));
-        console.log('📊 PIPELINE RESULTS:');
+        console.log('📊 FETCH RESULTS:');
         
         // Process finished matches result
         if (finishedResult.status === 'fulfilled') {
             console.log('\n✅ FINISHED MATCHES:');
             console.log(`   Total fetched: ${finishedResult.value.count}`);
+            if (finishedResult.value.addedToUnprocessed !== undefined) {
+                console.log(`   Added to unprocessed queue: ${finishedResult.value.addedToUnprocessed}`);
+                console.log(`   Status records created: ${finishedResult.value.addedToUnprocessed}`);
+            }
             if (finishedResult.value.inserted !== undefined) {
                 console.log(`   Inserted: ${finishedResult.value.inserted}`);
                 console.log(`   Updated: ${finishedResult.value.updated}`);
@@ -57,6 +68,24 @@ async function runAllFixturesFetchers() {
             console.log(`   Error: ${unfinishedResult.reason.message}`);
         }
         
+        // Step 3: Process one unprocessed fixture
+        console.log('\n' + '-'.repeat(60));
+        console.log('📊 STEP 3: Processing stats for one fixture...');
+        
+        const processResult = await runStatsProcessing(processRunId);
+        
+        console.log('-'.repeat(60));
+        console.log('📊 PROCESS RESULTS:');
+        if (processResult.success) {
+            console.log(`✅ Processing completed:`);
+            console.log(`   Processed: ${processResult.processed}`);
+            console.log(`   Failed: ${processResult.failed}`);
+        } else {
+            console.log(`⚠️ Processing had failures:`);
+            console.log(`   Processed: ${processResult.processed}`);
+            console.log(`   Failed: ${processResult.failed}`);
+        }
+        
         const endTime = Date.now();
         const durationSeconds = ((endTime - startTime) / 1000).toFixed(2);
         
@@ -66,12 +95,14 @@ async function runAllFixturesFetchers() {
         
         const overallSuccess = 
             finishedResult.status === 'fulfilled' && 
-            unfinishedResult.status === 'fulfilled';
+            unfinishedResult.status === 'fulfilled' &&
+            processResult.success;
         
         return {
             success: overallSuccess,
             finished: finishedResult.status === 'fulfilled' ? finishedResult.value : { error: finishedResult.reason.message },
             unfinished: unfinishedResult.status === 'fulfilled' ? unfinishedResult.value : { error: unfinishedResult.reason.message },
+            process: processResult,
             duration: durationSeconds
         };
         
