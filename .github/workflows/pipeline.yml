@@ -1,16 +1,15 @@
 ﻿name: FSDC Fixtures Pipeline
 
 on:
-  push:
-    branches: [ main ]
-  schedule:
-    - cron: '15 * * * *'
+  # Schedule is DISABLED for now - uncomment when ready
+  # schedule:
+  #   - cron: '15 * * * *'
   workflow_dispatch:
 
 jobs:
   fixtures-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # Prevents hanging jobs
+    timeout-minutes: 10
     
     steps:
     - name: Checkout code
@@ -32,7 +31,7 @@ jobs:
         TIDB_USER: ${{ secrets.TIDB_USER }}
         TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
       run: |
-        echo "🚀 Starting FSDC Fixtures Pipeline"
+        echo "🚀 Starting FSDC Fixtures Pipeline (Manual Run Only)"
         echo "Started at: $(date)"
         node src/fixtures/index.js
         echo "Completed at: $(date)"
