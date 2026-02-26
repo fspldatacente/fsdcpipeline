@@ -133,6 +133,21 @@ async function processGame(game, connection) {
         );
         
         try {
+            // DEBUG: Log the entire gameData structure before processing
+            console.log(`   🔍 DEBUG - Full gameData keys at Stage 2:`, Object.keys(gameData));
+            console.log(`   🔍 DEBUG - homeCompetitor details:`, JSON.stringify({
+                name: gameData.homeCompetitor?.name,
+                score: gameData.homeCompetitor?.score,
+                has_lineups: gameData.homeCompetitor?.lineups ? true : false,
+                lineups_members_count: gameData.homeCompetitor?.lineups?.members?.length || 0
+            }));
+            console.log(`   🔍 DEBUG - awayCompetitor details:`, JSON.stringify({
+                name: gameData.awayCompetitor?.name,
+                score: gameData.awayCompetitor?.score,
+                has_lineups: gameData.awayCompetitor?.lineups ? true : false,
+                lineups_members_count: gameData.awayCompetitor?.lineups?.members?.length || 0
+            }));
+            
             // Extract data from gameData
             const { homeCompetitor, awayCompetitor, members, chartEvents } = gameData;
             
@@ -153,6 +168,7 @@ async function processGame(game, connection) {
             
             // Process penalty events
             if (chartEvents?.events && Array.isArray(chartEvents.events)) {
+                console.log(`   🔍 DEBUG - Found ${chartEvents.events.length} chart events`);
                 chartEvents.events.filter(e => e && e.subType === 9).forEach(event => {
                     const playerId = String(event.playerId || '');
                     gamePenaltyXgMap.set(playerId, (gamePenaltyXgMap.get(playerId) || 0) + (parseFloat(event.xg) || 0));
@@ -160,16 +176,20 @@ async function processGame(game, connection) {
                         gamePenaltyMissedMap.set(playerId, (gamePenaltyMissedMap.get(playerId) || 0) + 1);
                     }
                 });
+                console.log(`   🔍 DEBUG - Found ${gamePenaltyXgMap.size} penalty events`);
             }
             
             // Create member name map
             const memberNameMap = new Map();
             if (members && Array.isArray(members)) {
+                console.log(`   🔍 DEBUG - Found ${members.length} members`);
                 members.forEach(m => {
                     if (m && m.id) {
                         memberNameMap.set(m.id, m.name || 'Unknown Player');
                     }
                 });
+            } else {
+                console.log(`   🔍 DEBUG - No members array found`);
             }
             
             // Process players and goalkeepers
