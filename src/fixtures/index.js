@@ -15,7 +15,7 @@ async function runAllFixturesFetchers() {
     const processRunId = `process-${timestamp}`;
     
     console.log('='.repeat(60));
-    console.log('🚀 FSDC FIXTURES PIPELINE');
+    console.log('🚀 FSDC FIXTURES PIPELINE (Season 53)');
     console.log('='.repeat(60));
     console.log(`Start time: ${new Date().toISOString()}`);
     console.log(`Finished Run ID: ${finishedRunId}`);
@@ -44,11 +44,6 @@ async function runAllFixturesFetchers() {
                 console.log(`   Added to unprocessed queue: ${finishedResult.value.addedToUnprocessed}`);
                 console.log(`   Status records created: ${finishedResult.value.addedToUnprocessed}`);
             }
-            if (finishedResult.value.inserted !== undefined) {
-                console.log(`   Inserted: ${finishedResult.value.inserted}`);
-                console.log(`   Updated: ${finishedResult.value.updated}`);
-                console.log(`   Errors: ${finishedResult.value.errors}`);
-            }
         } else {
             console.log('\n❌ FINISHED MATCHES FAILED:');
             console.log(`   Error: ${finishedResult.reason.message}`);
@@ -58,11 +53,6 @@ async function runAllFixturesFetchers() {
         if (unfinishedResult.status === 'fulfilled') {
             console.log('\n✅ UNFINISHED FIXTURES:');
             console.log(`   Total fetched: ${unfinishedResult.value.count}`);
-            if (unfinishedResult.value.inserted !== undefined) {
-                console.log(`   Inserted: ${unfinishedResult.value.inserted}`);
-                console.log(`   Updated: ${unfinishedResult.value.updated}`);
-                console.log(`   Errors: ${unfinishedResult.value.errors}`);
-            }
         } else {
             console.log('\n❌ UNFINISHED FIXTURES FAILED:');
             console.log(`   Error: ${unfinishedResult.reason.message}`);
@@ -70,7 +60,7 @@ async function runAllFixturesFetchers() {
         
         // Step 3: Process one unprocessed fixture
         console.log('\n' + '-'.repeat(60));
-        console.log('📊 STEP 3: Processing stats for one fixture...');
+        console.log('📊 STEP 3: Processing stats for one fixture (oldest first)...');
         
         const processResult = await runStatsProcessing(processRunId);
         
@@ -95,8 +85,7 @@ async function runAllFixturesFetchers() {
         
         const overallSuccess = 
             finishedResult.status === 'fulfilled' && 
-            unfinishedResult.status === 'fulfilled' &&
-            processResult.success;
+            unfinishedResult.status === 'fulfilled';
         
         return {
             success: overallSuccess,

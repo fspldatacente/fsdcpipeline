@@ -1,6 +1,8 @@
 ﻿name: FSDC Fixtures Pipeline
 
 on:
+  push:
+    branches: [ main ]
   schedule:
     - cron: '15 * * * *'
   workflow_dispatch:
@@ -8,7 +10,7 @@ on:
 jobs:
   fixtures-pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 10  # Prevents hanging jobs
     
     steps:
     - name: Checkout code

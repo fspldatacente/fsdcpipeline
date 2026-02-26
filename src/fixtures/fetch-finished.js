@@ -6,7 +6,7 @@ import dbClient from '../database/tidb-client.js';
 
 const BASE_URL = 'https://webws.365scores.com';
 const COMPETITION_ID = 649;
-const SEASON_NUM = 53;
+const SEASON_NUM = 53; // Current season
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json'
@@ -19,9 +19,24 @@ async function fetchFinishedMatches() {
     let allFinishedMatches = [];
     let currentPage = resultsUrl;
     let pageCount = 0;
+    let earlyExit = false;
+    
+    // Get the latest match date from database to check for new data
+    let latestMatchDate = null;
+    try {
+        const [latestResult] = await dbClient.query(
+            'SELECT MAX(match_date) as latest FROM finished_matches'
+        );
+        latestMatchDate = latestResult[0]?.latest;
+        if (latestMatchDate) {
+            console.log(`   Latest match in DB: ${new Date(latestMatchDate).toISOString()}`);
+        }
+    } catch (error) {
+        console.log('   Could not fetch latest match date, will fetch all pages');
+    }
     
     try {
-        while (currentPage) {
+        while (currentPage && !earlyExit) {
             pageCount++;
             console.log(`   Fetching page ${pageCount}...`);
             console.log(`   URL: ${BASE_URL}${currentPage}`);
@@ -35,17 +50,29 @@ async function fetchFinishedMatches() {
             
             const data = await response.json();
             
-            console.log(`   Response keys:`, Object.keys(data));
-            console.log(`   Has games array:`, Array.isArray(data.games));
-            console.log(`   Games count:`, data.games?.length || 0);
-            console.log(`   Total pages available:`, data.paging?.totalPages || 1);
-            
             if (data.games && Array.isArray(data.games)) {
-                allFinishedMatches = [...allFinishedMatches, ...data.games];
-                console.log(`   Found ${data.games.length} matches in this page`);
+                // CRITICAL: Only keep current season matches (seasonNum = 53)
+                const currentSeasonGames = data.games.filter(game => game.seasonNum === SEASON_NUM);
                 
-                if (pageCount === 1 && data.games.length > 0) {
-                    console.log('   Sample game structure:', JSON.stringify(data.games[0], null, 2).substring(0, 500) + '...');
+                console.log(`   Found ${data.games.length} matches in this page, ${currentSeasonGames.length} from current season`);
+                
+                if (currentSeasonGames.length > 0) {
+                    allFinishedMatches = [...allFinishedMatches, ...currentSeasonGames];
+                    
+                    // Check if we have old data and can exit early
+                    if (latestMatchDate && pageCount === 1) {
+                        const newestInBatch = new Date(currentSeasonGames[0].startTime);
+                        if (newestInBatch <= new Date(latestMatchDate)) {
+                            console.log('   No new matches since last run, stopping early');
+                            earlyExit = true;
+                            break;
+                        }
+                    }
+                }
+                
+                // Sample first game for debugging
+                if (pageCount === 1 && currentSeasonGames.length > 0) {
+                    console.log('   Sample current season game:', JSON.stringify(currentSeasonGames[0], null, 2).substring(0, 500) + '...');
                 }
             }
             
@@ -53,7 +80,7 @@ async function fetchFinishedMatches() {
             console.log(`   Next page:`, currentPage || 'none');
         }
         
-        console.log(`✅ Total finished matches fetched: ${allFinishedMatches.length}`);
+        console.log(`✅ Total current season matches fetched: ${allFinishedMatches.length}`);
         return allFinishedMatches;
         
     } catch (error) {
@@ -217,7 +244,7 @@ export default async function runFinishedMatchesFetch(runId) {
         const finishedMatches = await fetchFinishedMatches();
         
         if (finishedMatches.length === 0) {
-            console.log('⚠️ No finished matches found');
+            console.log('⚠️ No current season finished matches found');
             await dbClient.query(
                 `UPDATE sync_log SET status = ?, completed_at = NOW() WHERE id = ?`,
                 ['success', syncLogId]
