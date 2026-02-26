@@ -61,7 +61,7 @@ async function fetchGameDetails(gameId) {
         throw new Error('No game data in response');
     }
     
-    return data.game; // Return the game object directly
+    return data.game;
 }
 
 // Process a single game and save stats
@@ -96,6 +96,13 @@ async function processGame(game, connection) {
         try {
             gameData = await fetchGameDetails(fixtureId);
             
+            // DEBUG: Log the structure of gameData
+            console.log(`   🔍 DEBUG - Game data keys:`, Object.keys(gameData));
+            console.log(`   🔍 DEBUG - Home competitor:`, gameData.homeCompetitor?.name);
+            console.log(`   🔍 DEBUG - Away competitor:`, gameData.awayCompetitor?.name);
+            console.log(`   🔍 DEBUG - Has members:`, gameData.members ? 'yes' : 'no');
+            console.log(`   🔍 DEBUG - Members count:`, gameData.members?.length || 0);
+            
             await connection.execute(
                 `UPDATE match_processing_status 
                  SET fetch_status = 'success', fetch_completed_at = NOW()
@@ -113,7 +120,7 @@ async function processGame(game, connection) {
                 [fetchError.message.substring(0, 500), fixtureId]
             );
             console.error(`   ❌ Stage 1 failed: ${fetchError.message}`);
-            throw fetchError; // Re-throw to stop processing this game
+            throw fetchError;
         }
         
         // STAGE 2: Process stats
@@ -126,7 +133,7 @@ async function processGame(game, connection) {
         );
         
         try {
-            // Extract data from gameData - FIXED: no more .game property
+            // Extract data from gameData
             const { homeCompetitor, awayCompetitor, members, chartEvents } = gameData;
             
             // Validate required data
@@ -172,6 +179,8 @@ async function processGame(game, connection) {
                     return;
                 }
                 
+                console.log(`   👥 Processing ${playerList.length} players for ${teamName} (${venue})`);
+                
                 for (const player of playerList) {
                     if (!player) continue;
                     
@@ -184,7 +193,7 @@ async function processGame(game, connection) {
                     const shirtNumber = player.shirtNum || null;
                     
                     if (player.position?.id === 1) { // Goalkeeper
-                        const pensData = getStatValue(player, 44); // Penalties saved
+                        const pensData = getStatValue(player, 44);
                         
                         const gkStats = {
                             player_name: playerName,
@@ -201,6 +210,14 @@ async function processGame(game, connection) {
                             penalties_faced: (pensData && pensData.faced) || 0,
                             game_timestamp: gameData.startTime
                         };
+                        
+                        // DEBUG: Log goalkeeper data before insert
+                        console.log(`   🔍 DEBUG - GK data:`, JSON.stringify({
+                            player_name: gkStats.player_name,
+                            team_name: gkStats.team_name,
+                            venue: gkStats.venue,
+                            venue_length: gkStats.venue ? gkStats.venue.length : 0
+                        }));
                         
                         // Insert or update goalkeeper stats
                         await connection.execute(
@@ -248,6 +265,14 @@ async function processGame(game, connection) {
                             penalties_missed: gamePenaltyMissedMap.get(playerIdStr) || 0,
                             game_timestamp: gameData.startTime
                         };
+                        
+                        // DEBUG: Log player data before insert
+                        console.log(`   🔍 DEBUG - Player data:`, JSON.stringify({
+                            player_name: playerStats.player_name,
+                            team_name: playerStats.team_name,
+                            venue: playerStats.venue,
+                            venue_length: playerStats.venue ? playerStats.venue.length : 0
+                        }));
                         
                         // Insert or update player stats
                         await connection.execute(
@@ -332,6 +357,17 @@ async function processGame(game, connection) {
                     npscore_str: venue === 'home' ? `${teamNpScore}-${opponentNpScore}` : `${opponentNpScore}-${teamNpScore}`,
                     game_timestamp: gameData.startTime
                 };
+                
+                // DEBUG: Log team data before insert
+                console.log(`   🔍 DEBUG - Team data:`, JSON.stringify({
+                    team_name: teamStatsRow.team_name,
+                    venue: teamStatsRow.venue,
+                    venue_length: teamStatsRow.venue ? teamStatsRow.venue.length : 0,
+                    score_str: teamStatsRow.score_str,
+                    score_str_length: teamStatsRow.score_str ? teamStatsRow.score_str.length : 0,
+                    npscore_str: teamStatsRow.npscore_str,
+                    npscore_str_length: teamStatsRow.npscore_str ? teamStatsRow.npscore_str.length : 0
+                }));
                 
                 await connection.execute(
                     `INSERT INTO stats.score365_teams 
