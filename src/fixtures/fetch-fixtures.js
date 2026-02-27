@@ -3,6 +3,7 @@
 // 1. First run: fetches ALL historical data
 // 2. Subsequent runs: compares upcoming lists to find newly finished games
 // 3. Handles live games correctly
+// 4. Skips unnecessary updates when no changes detected
 
 import dbClient from '../database/tidb-client.js';
 
@@ -340,48 +341,59 @@ export default async function runFetchFixtures(runId, connection) {
             console.log(`   📊 Found ${missingFixtureIds.length} potentially finished games`);
             
             // Check each missing fixture
-            console.log('\n🔍 Step 4: Checking each missing game status...');
-            let finishedCount = 0;
-            let liveCount = 0;
-            let otherCount = 0;
-            
-            for (const missing of missingFixtureIds) {
-                console.log(`\n   🔍 Checking game ${missing.id}...`);
-                try {
-                    const gameDetails = await fetchGameDetails(missing.id);
-                    
-                    // StatusGroup: 2 = Scheduled, 3 = Live, 4 = Finished
-                    console.log(`      StatusGroup: ${gameDetails.statusGroup}, StatusText: ${gameDetails.statusText}`);
-                    
-                    if (gameDetails.statusGroup === 4) {
-                        console.log(`      ✅ Game is FINISHED - adding to queue`);
-                        await saveFinishedMatch(gameDetails, connection);
-                        finishedCount++;
-                    } else if (gameDetails.statusGroup === 3) {
-                        console.log(`      ⚽ Game is LIVE - keeping in upcoming`);
-                        await saveUpcomingFixtures([gameDetails], connection);
-                        liveCount++;
-                    } else {
-                        console.log(`      ℹ️ Game has status ${gameDetails.statusGroup} - updating`);
-                        await saveUpcomingFixtures([gameDetails], connection);
-                        otherCount++;
+            if (missingFixtureIds.length > 0) {
+                console.log('\n🔍 Step 4: Checking each missing game status...');
+                let finishedCount = 0;
+                let liveCount = 0;
+                let otherCount = 0;
+                
+                for (const missing of missingFixtureIds) {
+                    console.log(`\n   🔍 Checking game ${missing.id}...`);
+                    try {
+                        const gameDetails = await fetchGameDetails(missing.id);
+                        
+                        // StatusGroup: 2 = Scheduled, 3 = Live, 4 = Finished
+                        console.log(`      StatusGroup: ${gameDetails.statusGroup}, StatusText: ${gameDetails.statusText}`);
+                        
+                        if (gameDetails.statusGroup === 4) {
+                            console.log(`      ✅ Game is FINISHED - adding to queue`);
+                            await saveFinishedMatch(gameDetails, connection);
+                            finishedCount++;
+                        } else if (gameDetails.statusGroup === 3) {
+                            console.log(`      ⚽ Game is LIVE - keeping in upcoming`);
+                            await saveUpcomingFixtures([gameDetails], connection);
+                            liveCount++;
+                        } else {
+                            console.log(`      ℹ️ Game has status ${gameDetails.statusGroup} - updating`);
+                            await saveUpcomingFixtures([gameDetails], connection);
+                            otherCount++;
+                        }
+                    } catch (error) {
+                        console.error(`      ❌ Error checking game ${missing.id}:`, error.message);
                     }
-                } catch (error) {
-                    console.error(`      ❌ Error checking game ${missing.id}:`, error.message);
                 }
+                
+                // Update upcoming fixtures with fresh data only if there were changes
+                console.log('\n💾 Step 5: Updating upcoming fixtures with fresh API data...');
+                await saveUpcomingFixtures(apiUpcoming, connection);
+                
+                console.log('\n' + '-'.repeat(60));
+                console.log('✅ SUBSEQUENT RUN COMPLETE:');
+                console.log(`   Missing games checked: ${missingFixtureIds.length}`);
+                console.log(`   Finished games added: ${finishedCount}`);
+                console.log(`   Live games updated: ${liveCount}`);
+                console.log(`   Other updates: ${otherCount}`);
+                console.log('-'.repeat(60));
+            } else {
+                console.log('\n🔍 Step 4: No missing games found - skipping detailed check');
+                console.log('\n💾 Step 5: No changes detected - skipping upcoming fixtures update');
+                
+                console.log('\n' + '-'.repeat(60));
+                console.log('✅ SUBSEQUENT RUN COMPLETE:');
+                console.log(`   Missing games checked: 0`);
+                console.log(`   No updates needed`);
+                console.log('-'.repeat(60));
             }
-            
-            // Update upcoming fixtures with fresh data
-            console.log('\n💾 Step 5: Updating upcoming fixtures with fresh API data...');
-            await saveUpcomingFixtures(apiUpcoming, connection);
-            
-            console.log('\n' + '-'.repeat(60));
-            console.log('✅ SUBSEQUENT RUN COMPLETE:');
-            console.log(`   Missing games checked: ${missingFixtureIds.length}`);
-            console.log(`   Finished games added: ${finishedCount}`);
-            console.log(`   Live games updated: ${liveCount}`);
-            console.log(`   Other updates: ${otherCount}`);
-            console.log('-'.repeat(60));
         }
         
         console.log('\n' + '='.repeat(60));
