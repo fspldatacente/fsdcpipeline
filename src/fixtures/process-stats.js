@@ -462,13 +462,11 @@ export default async function runStatsProcessing(runId, connection) {
             console.log(`🔄 Processing cycle #${loopCount} (${gamesInQueue} games remaining)`);
             console.log(`${'-'.repeat(50)}`);
             
-            // Get one unprocessed fixture - ORDER BY round_num ASC for oldest first
+            // SIMPLIFIED: Get the oldest game from unprocessed_fixtures regardless of status
             const [fixtures] = await connection.execute(
-                `SELECT u.* 
-                 FROM unprocessed_fixtures u
-                 LEFT JOIN match_processing_status m ON u.fixture_id = m.fixture_id
-                 WHERE m.overall_status != 'processing' AND (m.overall_status IS NULL OR m.overall_status != 'completed')
-                 ORDER BY u.round_num ASC, u.match_date ASC
+                `SELECT * 
+                 FROM unprocessed_fixtures 
+                 ORDER BY round_num ASC, match_date ASC 
                  LIMIT 1`
             );
             
