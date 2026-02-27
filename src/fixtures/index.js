@@ -4,6 +4,7 @@
 // 2. Fetch unfinished fixtures
 // 3. Process one unprocessed fixture for stats
 
+import dbClient from '../database/tidb-client.js';
 import runFinishedMatchesFetch from './fetch-finished.js';
 import runUnfinishedFixturesFetch from './fetch-unfinished.js';
 import runStatsProcessing from './process-stats.js';
@@ -24,13 +25,19 @@ async function runAllFixturesFetchers() {
     console.log('-'.repeat(60));
     
     const startTime = Date.now();
+    let connection = null;
     
     try {
-        // Step 1 & 2: Run both fetchers in parallel
+        // Initialize ONE connection for the entire pipeline
+        await dbClient.initialize();
+        connection = await dbClient.getConnection();
+        console.log('✅ Single database connection established for entire pipeline');
+        
+        // Step 1 & 2: Run both fetchers in parallel using the same connection
         console.log('\n📥 STEP 1 & 2: Fetching fixtures...');
         const [finishedResult, unfinishedResult] = await Promise.allSettled([
-            runFinishedMatchesFetch(finishedRunId),
-            runUnfinishedFixturesFetch(unfinishedRunId)
+            runFinishedMatchesFetch(finishedRunId, connection),
+            runUnfinishedFixturesFetch(unfinishedRunId, connection)
         ]);
         
         console.log('-'.repeat(60));
@@ -58,11 +65,11 @@ async function runAllFixturesFetchers() {
             console.log(`   Error: ${unfinishedResult.reason.message}`);
         }
         
-        // Step 3: Process one unprocessed fixture
+        // Step 3: Process one unprocessed fixture using the same connection
         console.log('\n' + '-'.repeat(60));
         console.log('📊 STEP 3: Processing stats for one fixture (oldest first)...');
         
-        const processResult = await runStatsProcessing(processRunId);
+        const processResult = await runStatsProcessing(processRunId, connection);
         
         console.log('-'.repeat(60));
         console.log('📊 PROCESS RESULTS:');
@@ -98,6 +105,13 @@ async function runAllFixturesFetchers() {
     } catch (error) {
         console.error('💥 Fatal error in fixtures pipeline:', error);
         throw error;
+    } finally {
+        // Close the single connection at the very end
+        if (connection) {
+            await connection.release();
+            console.log('✅ Database connection released');
+        }
+        await dbClient.close();
     }
 }
 

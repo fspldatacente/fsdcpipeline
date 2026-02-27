@@ -16,15 +16,15 @@ async function fetchUnfinishedFixtures() {
     console.log('📥 Fetching upcoming fixtures from 365scores...');
     
     const fixturesUrl = '/web/games/fixtures/?appTypeId=5&langId=1&timezoneName=UTC&userCountryId=1&competitions=649';
-    let allUnfinishedFixtures = [];
+    let allGames = [];
     let currentPage = fixturesUrl;
     let pageCount = 0;
     
     try {
+        // Fetch ALL pages without filtering by season
         while (currentPage) {
             pageCount++;
             console.log(`   Fetching page ${pageCount}...`);
-            console.log(`   URL: ${BASE_URL}${currentPage}`);
             
             const response = await fetch(`${BASE_URL}${currentPage}`, { headers: HEADERS });
             
@@ -36,24 +36,21 @@ async function fetchUnfinishedFixtures() {
             const data = await response.json();
             
             if (data.games && Array.isArray(data.games)) {
-                // CRITICAL: Only keep current season fixtures (seasonNum = 53)
-                const currentSeasonGames = data.games.filter(game => game.seasonNum === SEASON_NUM);
-                
-                console.log(`   Found ${data.games.length} fixtures in this page, ${currentSeasonGames.length} from current season`);
-                
-                allUnfinishedFixtures = [...allUnfinishedFixtures, ...currentSeasonGames];
-                
-                if (pageCount === 1 && currentSeasonGames.length > 0) {
-                    console.log('   Sample current season fixture:', JSON.stringify(currentSeasonGames[0], null, 2).substring(0, 500) + '...');
-                }
+                console.log(`   Found ${data.games.length} fixtures in this page`);
+                allGames = [...allGames, ...data.games];
             }
             
+            // For fixtures endpoint, we use nextPage
             currentPage = data.paging?.nextPage || null;
             console.log(`   Next page:`, currentPage || 'none');
         }
         
-        console.log(`✅ Total current season upcoming fixtures fetched: ${allUnfinishedFixtures.length}`);
-        return allUnfinishedFixtures;
+        // Filter for current season ONCE at the end
+        const currentSeasonGames = allGames.filter(game => game.seasonNum === SEASON_NUM);
+        console.log(`✅ Total fixtures fetched: ${allGames.length}`);
+        console.log(`✅ Current season fixtures: ${currentSeasonGames.length}`);
+        
+        return currentSeasonGames;
         
     } catch (error) {
         console.error('❌ Error fetching upcoming fixtures:', error.message);
@@ -80,7 +77,7 @@ function transformUnfinishedFixture(game) {
     };
 }
 
-async function saveUnfinishedFixtures(fixtures) {
+async function saveUnfinishedFixtures(fixtures, connection) {
     console.log('💾 Saving upcoming fixtures to TiDB...');
     
     let inserted = 0;
@@ -91,13 +88,13 @@ async function saveUnfinishedFixtures(fixtures) {
         try {
             const fixture = transformUnfinishedFixture(game);
             
-            const existing = await dbClient.query(
+            const [existing] = await connection.execute(
                 'SELECT fixture_id FROM upcoming_fixtures WHERE fixture_id = ?',
                 [fixture.fixture_id]
             );
             
             if (existing.length > 0) {
-                await dbClient.query(
+                await connection.execute(
                     `UPDATE upcoming_fixtures 
                      SET kickoff_time = ?, status = ?, full_data = ?, updated_at = CURRENT_TIMESTAMP
                      WHERE fixture_id = ?`,
@@ -108,7 +105,7 @@ async function saveUnfinishedFixtures(fixtures) {
                 );
                 updated++;
             } else {
-                await dbClient.query(
+                await connection.execute(
                     `INSERT INTO upcoming_fixtures 
                      (fixture_id, round_num, home_team, away_team, kickoff_time, status, full_data)
                      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -130,7 +127,7 @@ async function saveUnfinishedFixtures(fixtures) {
     return { inserted, updated, errors };
 }
 
-export default async function runUnfinishedFixturesFetch(runId) {
+export default async function runUnfinishedFixturesFetch(runId, connection) {
     console.log('\n🏁 Starting Unfinished Fixtures Fetch...');
     console.log(`   Run ID: ${runId}`);
     console.log(`   Time: ${new Date().toISOString()}`);
@@ -138,9 +135,7 @@ export default async function runUnfinishedFixturesFetch(runId) {
     let syncLogId = null;
     
     try {
-        await dbClient.initialize();
-        
-        const syncLogResult = await dbClient.query(
+        const [syncLogResult] = await connection.execute(
             `INSERT INTO sync_log (run_id, source, status) VALUES (?, ?, ?)`,
             [runId, 'unfinished-fixtures', 'running']
         );
@@ -150,16 +145,16 @@ export default async function runUnfinishedFixturesFetch(runId) {
         
         if (upcomingFixtures.length === 0) {
             console.log('⚠️ No current season upcoming fixtures found');
-            await dbClient.query(
+            await connection.execute(
                 `UPDATE sync_log SET status = ?, completed_at = NOW() WHERE id = ?`,
                 ['success', syncLogId]
             );
             return { success: true, count: 0 };
         }
         
-        const stats = await saveUnfinishedFixtures(upcomingFixtures);
+        const stats = await saveUnfinishedFixtures(upcomingFixtures, connection);
         
-        await dbClient.query(
+        await connection.execute(
             `UPDATE sync_log 
              SET status = ?, completed_at = NOW(), unfinished_fetched = ?
              WHERE id = ?`,
@@ -175,7 +170,7 @@ export default async function runUnfinishedFixturesFetch(runId) {
     } catch (error) {
         console.error('❌ Unfinished fixtures fetch failed:', error.message);
         if (syncLogId) {
-            await dbClient.query(
+            await connection.execute(
                 `UPDATE sync_log 
                  SET status = ?, completed_at = NOW(), error_message = ?
                  WHERE id = ?`,
@@ -183,7 +178,5 @@ export default async function runUnfinishedFixturesFetch(runId) {
             );
         }
         throw error;
-    } finally {
-        await dbClient.close();
     }
 }

@@ -16,30 +16,15 @@ async function fetchFinishedMatches() {
     console.log('📥 Fetching finished matches from 365scores...');
     
     const resultsUrl = '/web/games/results/?appTypeId=5&langId=1&timezoneName=UTC&userCountryId=1&competitions=649';
-    let allFinishedMatches = [];
+    let allGames = [];
     let currentPage = resultsUrl;
     let pageCount = 0;
-    let earlyExit = false;
-    
-    // Get the latest match date from database to check for new data
-    let latestMatchDate = null;
-    try {
-        const [latestResult] = await dbClient.query(
-            'SELECT MAX(match_date) as latest FROM finished_matches'
-        );
-        latestMatchDate = latestResult[0]?.latest;
-        if (latestMatchDate) {
-            console.log(`   Latest match in DB: ${new Date(latestMatchDate).toISOString()}`);
-        }
-    } catch (error) {
-        console.log('   Could not fetch latest match date, will fetch all pages');
-    }
     
     try {
-        while (currentPage && !earlyExit) {
+        // Fetch ALL pages without filtering by season
+        while (currentPage) {
             pageCount++;
             console.log(`   Fetching page ${pageCount}...`);
-            console.log(`   URL: ${BASE_URL}${currentPage}`);
             
             const response = await fetch(`${BASE_URL}${currentPage}`, { headers: HEADERS });
             
@@ -51,37 +36,21 @@ async function fetchFinishedMatches() {
             const data = await response.json();
             
             if (data.games && Array.isArray(data.games)) {
-                // CRITICAL: Only keep current season matches (seasonNum = 53)
-                const currentSeasonGames = data.games.filter(game => game.seasonNum === SEASON_NUM);
-                
-                console.log(`   Found ${data.games.length} matches in this page, ${currentSeasonGames.length} from current season`);
-                
-                if (currentSeasonGames.length > 0) {
-                    allFinishedMatches = [...allFinishedMatches, ...currentSeasonGames];
-                    
-                    // Check if we have old data and can exit early
-                    if (latestMatchDate && pageCount === 1) {
-                        const newestInBatch = new Date(currentSeasonGames[0].startTime);
-                        if (newestInBatch <= new Date(latestMatchDate)) {
-                            console.log('   No new matches since last run, stopping early');
-                            earlyExit = true;
-                            break;
-                        }
-                    }
-                }
-                
-                // Sample first game for debugging
-                if (pageCount === 1 && currentSeasonGames.length > 0) {
-                    console.log('   Sample current season game:', JSON.stringify(currentSeasonGames[0], null, 2).substring(0, 500) + '...');
-                }
+                console.log(`   Found ${data.games.length} matches in this page`);
+                allGames = [...allGames, ...data.games];
             }
             
+            // For results endpoint, we use previousPage
             currentPage = data.paging?.previousPage || null;
             console.log(`   Next page:`, currentPage || 'none');
         }
         
-        console.log(`✅ Total current season matches fetched: ${allFinishedMatches.length}`);
-        return allFinishedMatches;
+        // Filter for current season ONCE at the end
+        const currentSeasonGames = allGames.filter(game => game.seasonNum === SEASON_NUM);
+        console.log(`✅ Total matches fetched: ${allGames.length}`);
+        console.log(`✅ Current season matches: ${currentSeasonGames.length}`);
+        
+        return currentSeasonGames;
         
     } catch (error) {
         console.error('❌ Error fetching finished matches:', error.message);
@@ -112,7 +81,7 @@ function transformFinishedMatch(game) {
     };
 }
 
-async function saveFinishedMatches(matches) {
+async function saveFinishedMatches(matches, connection) {
     console.log('💾 Saving finished matches to TiDB...');
     
     let inserted = 0;
@@ -126,13 +95,13 @@ async function saveFinishedMatches(matches) {
             const match = transformFinishedMatch(game);
             
             // 1. Save/Update in finished_matches table
-            const existing = await dbClient.query(
+            const [existing] = await connection.execute(
                 'SELECT fixture_id FROM finished_matches WHERE fixture_id = ?',
                 [match.fixture_id]
             );
             
             if (existing.length > 0) {
-                await dbClient.query(
+                await connection.execute(
                     `UPDATE finished_matches 
                      SET home_score = ?, away_score = ?, match_date = ?, 
                          status = ?, full_data = ?, updated_at = CURRENT_TIMESTAMP
@@ -144,7 +113,7 @@ async function saveFinishedMatches(matches) {
                 );
                 updated++;
             } else {
-                await dbClient.query(
+                await connection.execute(
                     `INSERT INTO finished_matches 
                      (fixture_id, round_num, home_team, away_team, home_score, away_score, match_date, status, full_data)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -158,26 +127,26 @@ async function saveFinishedMatches(matches) {
             }
             
             // 2. Check if this fixture is already in unprocessed_fixtures
-            const unprocessedCheck = await dbClient.query(
+            const [unprocessedCheck] = await connection.execute(
                 'SELECT fixture_id FROM unprocessed_fixtures WHERE fixture_id = ?',
                 [match.fixture_id]
             );
             
             // 3. Check if it's already in processed_fixtures (already done)
-            const processedCheck = await dbClient.query(
+            const [processedCheck] = await connection.execute(
                 'SELECT fixture_id FROM processed_fixtures WHERE fixture_id = ?',
                 [match.fixture_id]
             );
             
             // 4. Check if status record already exists
-            const statusCheck = await dbClient.query(
+            const [statusCheck] = await connection.execute(
                 'SELECT fixture_id FROM match_processing_status WHERE fixture_id = ?',
                 [match.fixture_id]
             );
             
             // 5. If not in unprocessed AND not in processed, add to unprocessed
             if (unprocessedCheck.length === 0 && processedCheck.length === 0) {
-                await dbClient.query(
+                await connection.execute(
                     `INSERT INTO unprocessed_fixtures 
                      (fixture_id, round_num, home_team, away_team, home_score, away_score, match_date, full_data)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -190,7 +159,7 @@ async function saveFinishedMatches(matches) {
                 
                 // 6. Create status record if it doesn't exist
                 if (statusCheck.length === 0) {
-                    await dbClient.query(
+                    await connection.execute(
                         `INSERT INTO match_processing_status 
                          (fixture_id, round_num, home_team, away_team, match_date, overall_status)
                          VALUES (?, ?, ?, ?, ?, 'pending')`,
@@ -224,7 +193,7 @@ async function saveFinishedMatches(matches) {
     return { inserted, updated, addedToUnprocessed, skipped, errors };
 }
 
-export default async function runFinishedMatchesFetch(runId) {
+export default async function runFinishedMatchesFetch(runId, connection) {
     console.log('\n🏁 Starting Finished Matches Fetch...');
     console.log(`   Run ID: ${runId}`);
     console.log(`   Time: ${new Date().toISOString()}`);
@@ -232,10 +201,8 @@ export default async function runFinishedMatchesFetch(runId) {
     let syncLogId = null;
     
     try {
-        await dbClient.initialize();
-        
         // Log start of sync
-        const syncLogResult = await dbClient.query(
+        const [syncLogResult] = await connection.execute(
             `INSERT INTO sync_log (run_id, source, status) VALUES (?, ?, ?)`,
             [runId, 'finished-matches', 'running']
         );
@@ -245,16 +212,16 @@ export default async function runFinishedMatchesFetch(runId) {
         
         if (finishedMatches.length === 0) {
             console.log('⚠️ No current season finished matches found');
-            await dbClient.query(
+            await connection.execute(
                 `UPDATE sync_log SET status = ?, completed_at = NOW() WHERE id = ?`,
                 ['success', syncLogId]
             );
             return { success: true, count: 0 };
         }
         
-        const stats = await saveFinishedMatches(finishedMatches);
+        const stats = await saveFinishedMatches(finishedMatches, connection);
         
-        await dbClient.query(
+        await connection.execute(
             `UPDATE sync_log 
              SET status = ?, completed_at = NOW(), finished_fetched = ?
              WHERE id = ?`,
@@ -270,7 +237,7 @@ export default async function runFinishedMatchesFetch(runId) {
     } catch (error) {
         console.error('❌ Finished matches fetch failed:', error.message);
         if (syncLogId) {
-            await dbClient.query(
+            await connection.execute(
                 `UPDATE sync_log 
                  SET status = ?, completed_at = NOW(), error_message = ?
                  WHERE id = ?`,
@@ -278,7 +245,5 @@ export default async function runFinishedMatchesFetch(runId) {
             );
         }
         throw error;
-    } finally {
-        await dbClient.close();
     }
 }

@@ -56,23 +56,11 @@ async function fetchGameDetails(gameId) {
     
     const data = await response.json();
     
-    // DEBUG: Log the raw response
-    console.log(`   🔍 DEBUG - Raw response keys:`, Object.keys(data));
-    
     if (!data?.game) {
         console.error(`   ❌ No game data in response for game ${gameId}`);
         console.error(`   Response keys:`, Object.keys(data));
         throw new Error('No game data in response');
     }
-    
-    // DEBUG: Log the game data structure
-    console.log(`   🔍 DEBUG - Game data keys:`, Object.keys(data.game));
-    console.log(`   🔍 DEBUG - Home competitor:`, data.game.homeCompetitor?.name);
-    console.log(`   🔍 DEBUG - Away competitor:`, data.game.awayCompetitor?.name);
-    console.log(`   🔍 DEBUG - Home competitor score:`, data.game.homeCompetitor?.score);
-    console.log(`   🔍 DEBUG - Away competitor score:`, data.game.awayCompetitor?.score);
-    console.log(`   🔍 DEBUG - Has members:`, data.game.members ? 'yes' : 'no');
-    console.log(`   🔍 DEBUG - Members count:`, data.game.members?.length || 0);
     
     return data.game;
 }
@@ -109,9 +97,6 @@ async function processGame(game, connection) {
         try {
             gameData = await fetchGameDetails(fixtureId);
             
-            // DEBUG: Log the structure right after fetch
-            console.log(`   🔍 DEBUG - After fetch - Game data keys:`, Object.keys(gameData));
-            
             await connection.execute(
                 `UPDATE match_processing_status 
                  SET fetch_status = 'success', fetch_completed_at = NOW()
@@ -142,19 +127,6 @@ async function processGame(game, connection) {
         );
         
         try {
-            // DEBUG: Log the full gameData structure before any processing
-            console.log(`   🔍 DEBUG - Full gameData before processing:`, JSON.stringify({
-                has_home: !!gameData.homeCompetitor,
-                has_away: !!gameData.awayCompetitor,
-                home_name: gameData.homeCompetitor?.name,
-                away_name: gameData.awayCompetitor?.name,
-                home_score: gameData.homeCompetitor?.score,
-                away_score: gameData.awayCompetitor?.score,
-                has_members: !!gameData.members,
-                members_count: gameData.members?.length || 0,
-                has_chartEvents: !!gameData.chartEvents
-            }));
-            
             // Extract data from gameData
             const { homeCompetitor, awayCompetitor, members, chartEvents } = gameData;
             
@@ -175,7 +147,6 @@ async function processGame(game, connection) {
             
             // Process penalty events
             if (chartEvents?.events && Array.isArray(chartEvents.events)) {
-                console.log(`   🔍 DEBUG - Found ${chartEvents.events.length} chart events`);
                 chartEvents.events.filter(e => e && e.subType === 9).forEach(event => {
                     const playerId = String(event.playerId || '');
                     gamePenaltyXgMap.set(playerId, (gamePenaltyXgMap.get(playerId) || 0) + (parseFloat(event.xg) || 0));
@@ -183,20 +154,16 @@ async function processGame(game, connection) {
                         gamePenaltyMissedMap.set(playerId, (gamePenaltyMissedMap.get(playerId) || 0) + 1);
                     }
                 });
-                console.log(`   🔍 DEBUG - Found ${gamePenaltyXgMap.size} penalty events`);
             }
             
             // Create member name map
             const memberNameMap = new Map();
             if (members && Array.isArray(members)) {
-                console.log(`   🔍 DEBUG - Found ${members.length} members`);
                 members.forEach(m => {
                     if (m && m.id) {
                         memberNameMap.set(m.id, m.name || 'Unknown Player');
                     }
                 });
-            } else {
-                console.log(`   🔍 DEBUG - No members array found`);
             }
             
             // Process players and goalkeepers
@@ -205,8 +172,6 @@ async function processGame(game, connection) {
                     console.log(`   ⚠️ No player list for ${teamName}`);
                     return;
                 }
-                
-                console.log(`   👥 Processing ${playerList.length} players for ${teamName} (${venue})`);
                 
                 for (const player of playerList) {
                     if (!player) continue;
@@ -237,14 +202,6 @@ async function processGame(game, connection) {
                             penalties_faced: (pensData && pensData.faced) || 0,
                             game_timestamp: gameData.startTime
                         };
-                        
-                        // DEBUG: Log goalkeeper data before insert
-                        console.log(`   🔍 DEBUG - GK data:`, JSON.stringify({
-                            player_name: gkStats.player_name,
-                            team_name: gkStats.team_name,
-                            venue: gkStats.venue,
-                            venue_length: gkStats.venue ? gkStats.venue.length : 0
-                        }));
                         
                         // Insert or update goalkeeper stats
                         await connection.execute(
@@ -292,14 +249,6 @@ async function processGame(game, connection) {
                             penalties_missed: gamePenaltyMissedMap.get(playerIdStr) || 0,
                             game_timestamp: gameData.startTime
                         };
-                        
-                        // DEBUG: Log player data before insert
-                        console.log(`   🔍 DEBUG - Player data:`, JSON.stringify({
-                            player_name: playerStats.player_name,
-                            team_name: playerStats.team_name,
-                            venue: playerStats.venue,
-                            venue_length: playerStats.venue ? playerStats.venue.length : 0
-                        }));
                         
                         // Insert or update player stats
                         await connection.execute(
@@ -384,17 +333,6 @@ async function processGame(game, connection) {
                     npscore_str: venue === 'home' ? `${teamNpScore}-${opponentNpScore}` : `${opponentNpScore}-${teamNpScore}`,
                     game_timestamp: gameData.startTime
                 };
-                
-                // DEBUG: Log team data before insert
-                console.log(`   🔍 DEBUG - Team data:`, JSON.stringify({
-                    team_name: teamStatsRow.team_name,
-                    venue: teamStatsRow.venue,
-                    venue_length: teamStatsRow.venue ? teamStatsRow.venue.length : 0,
-                    score_str: teamStatsRow.score_str,
-                    score_str_length: teamStatsRow.score_str ? teamStatsRow.score_str.length : 0,
-                    npscore_str: teamStatsRow.npscore_str,
-                    npscore_str_length: teamStatsRow.npscore_str ? teamStatsRow.npscore_str.length : 0
-                }));
                 
                 await connection.execute(
                     `INSERT INTO stats.score365_teams 
@@ -489,7 +427,7 @@ async function processGame(game, connection) {
 }
 
 // Main function to process unprocessed fixtures
-export default async function runStatsProcessing(runId) {
+export default async function runStatsProcessing(runId, connection) {
     console.log('\n🏁 Starting Stats Processing...');
     console.log(`   Run ID: ${runId}`);
     console.log(`   Time: ${new Date().toISOString()}`);
@@ -498,10 +436,8 @@ export default async function runStatsProcessing(runId) {
     let failedCount = 0;
     
     try {
-        await dbClient.initialize();
-        
         // Get one unprocessed fixture - ORDER BY round_num ASC for oldest first
-        const [fixtures] = await dbClient.pool.execute(
+        const [fixtures] = await connection.execute(
             `SELECT u.* 
              FROM unprocessed_fixtures u
              LEFT JOIN match_processing_status m ON u.fixture_id = m.fixture_id
@@ -520,7 +456,7 @@ export default async function runStatsProcessing(runId) {
         console.log(`   ${fixture.home_team} vs ${fixture.away_team} (Round ${fixture.round_num})`);
         
         try {
-            await processGame(fixture, dbClient.pool);
+            await processGame(fixture, connection);
             processedCount++;
         } catch (error) {
             console.error(`❌ Failed to process game ${fixture.fixture_id}:`, error.message);
@@ -540,20 +476,5 @@ export default async function runStatsProcessing(runId) {
     } catch (error) {
         console.error('❌ Stats processing failed:', error.message);
         throw error;
-    } finally {
-        await dbClient.close();
     }
-}
-
-// If running directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-    const runId = `process-${Date.now()}`;
-    runStatsProcessing(runId)
-        .then(result => {
-            process.exit(result.success ? 0 : 1);
-        })
-        .catch(error => {
-            console.error(error);
-            process.exit(1);
-        });
 }
