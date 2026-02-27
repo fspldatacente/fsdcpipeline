@@ -1,26 +1,22 @@
 // src/fixtures/index.js
 // Orchestrator that runs:
-// 1. Fetch finished matches
-// 2. Fetch unfinished fixtures
-// 3. Process one unprocessed fixture for stats
+// 1. Fetch fixtures (intelligently - first run vs subsequent)
+// 2. Process one unprocessed fixture for stats
 
 import dbClient from '../database/tidb-client.js';
-import runFinishedMatchesFetch from './fetch-finished.js';
-import runUnfinishedFixturesFetch from './fetch-unfinished.js';
+import runFetchFixtures from './fetch-fixtures.js';
 import runStatsProcessing from './process-stats.js';
 
 async function runAllFixturesFetchers() {
     const timestamp = Date.now();
-    const finishedRunId = `finished-${timestamp}`;
-    const unfinishedRunId = `unfinished-${timestamp}`;
+    const fetchRunId = `fetch-${timestamp}`;
     const processRunId = `process-${timestamp}`;
     
     console.log('='.repeat(60));
     console.log('🚀 FSDC FIXTURES PIPELINE (Season 53)');
     console.log('='.repeat(60));
     console.log(`Start time: ${new Date().toISOString()}`);
-    console.log(`Finished Run ID: ${finishedRunId}`);
-    console.log(`Unfinished Run ID: ${unfinishedRunId}`);
+    console.log(`Fetch Run ID: ${fetchRunId}`);
     console.log(`Process Run ID: ${processRunId}`);
     console.log('-'.repeat(60));
     
@@ -33,41 +29,17 @@ async function runAllFixturesFetchers() {
         connection = await dbClient.getConnection();
         console.log('✅ Single database connection established for entire pipeline');
         
-        // Step 1 & 2: Run both fetchers in parallel using the same connection
-        console.log('\n📥 STEP 1 & 2: Fetching fixtures...');
-        const [finishedResult, unfinishedResult] = await Promise.allSettled([
-            runFinishedMatchesFetch(finishedRunId, connection),
-            runUnfinishedFixturesFetch(unfinishedRunId, connection)
-        ]);
+        // STEP 1: Fetch fixtures (smart logic - first run vs subsequent)
+        console.log('\n📥 STEP 1: Fetching fixtures...');
+        const fetchResult = await runFetchFixtures(fetchRunId, connection);
         
         console.log('-'.repeat(60));
         console.log('📊 FETCH RESULTS:');
+        console.log(`✅ Fetch completed: ${fetchResult.success ? 'Success' : 'Failed'}`);
         
-        // Process finished matches result
-        if (finishedResult.status === 'fulfilled') {
-            console.log('\n✅ FINISHED MATCHES:');
-            console.log(`   Total fetched: ${finishedResult.value.count}`);
-            if (finishedResult.value.addedToUnprocessed !== undefined) {
-                console.log(`   Added to unprocessed queue: ${finishedResult.value.addedToUnprocessed}`);
-                console.log(`   Status records created: ${finishedResult.value.addedToUnprocessed}`);
-            }
-        } else {
-            console.log('\n❌ FINISHED MATCHES FAILED:');
-            console.log(`   Error: ${finishedResult.reason.message}`);
-        }
-        
-        // Process unfinished fixtures result
-        if (unfinishedResult.status === 'fulfilled') {
-            console.log('\n✅ UNFINISHED FIXTURES:');
-            console.log(`   Total fetched: ${unfinishedResult.value.count}`);
-        } else {
-            console.log('\n❌ UNFINISHED FIXTURES FAILED:');
-            console.log(`   Error: ${unfinishedResult.reason.message}`);
-        }
-        
-        // Step 3: Process one unprocessed fixture using the same connection
+        // STEP 2: Process one unprocessed fixture
         console.log('\n' + '-'.repeat(60));
-        console.log('📊 STEP 3: Processing stats for one fixture (oldest first)...');
+        console.log('📊 STEP 2: Processing stats for one fixture (oldest first)...');
         
         const processResult = await runStatsProcessing(processRunId, connection);
         
@@ -90,14 +62,9 @@ async function runAllFixturesFetchers() {
         console.log(`⏱️  Total duration: ${durationSeconds} seconds`);
         console.log('='.repeat(60));
         
-        const overallSuccess = 
-            finishedResult.status === 'fulfilled' && 
-            unfinishedResult.status === 'fulfilled';
-        
         return {
-            success: overallSuccess,
-            finished: finishedResult.status === 'fulfilled' ? finishedResult.value : { error: finishedResult.reason.message },
-            unfinished: unfinishedResult.status === 'fulfilled' ? unfinishedResult.value : { error: unfinishedResult.reason.message },
+            success: fetchResult.success && processResult.success,
+            fetch: fetchResult,
             process: processResult,
             duration: durationSeconds
         };
