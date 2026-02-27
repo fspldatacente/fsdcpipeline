@@ -3,6 +3,7 @@
 // Saves stats to score365_* tables in stats database
 // Updates match_processing_status at each stage
 // Moves processed fixtures to processed_fixtures table
+// CONTINUES until no more unprocessed fixtures remain
 
 import dbClient from '../database/tidb-client.js';
 
@@ -426,55 +427,128 @@ async function processGame(game, connection) {
     }
 }
 
-// Main function to process unprocessed fixtures
+// Main function to process ALL unprocessed fixtures
 export default async function runStatsProcessing(runId, connection) {
-    console.log('\n🏁 Starting Stats Processing...');
+    console.log('\n' + '='.repeat(60));
+    console.log('🏁 STARTING STATS PROCESSING (Batch Mode)');
+    console.log('='.repeat(60));
     console.log(`   Run ID: ${runId}`);
     console.log(`   Time: ${new Date().toISOString()}`);
+    console.log('-'.repeat(60));
     
-    let processedCount = 0;
-    let failedCount = 0;
+    let totalProcessed = 0;
+    let totalFailed = 0;
+    let gamesProcessed = 0;
     
     try {
-        // Get one unprocessed fixture - ORDER BY round_num ASC for oldest first
-        const [fixtures] = await connection.execute(
-            `SELECT u.* 
-             FROM unprocessed_fixtures u
-             LEFT JOIN match_processing_status m ON u.fixture_id = m.fixture_id
-             WHERE m.overall_status != 'processing' OR m.overall_status IS NULL
-             ORDER BY u.round_num ASC, u.match_date ASC
-             LIMIT 1`
+        // Check initial queue size
+        const [countResult] = await connection.execute(
+            'SELECT COUNT(*) as count FROM unprocessed_fixtures'
         );
+        const initialQueueSize = countResult[0].count;
+        console.log(`\n📊 Initial unprocessed queue: ${initialQueueSize} games\n`);
         
-        if (fixtures.length === 0) {
-            console.log('📭 No unprocessed fixtures found');
+        if (initialQueueSize === 0) {
+            console.log('📭 No games to process - exiting early');
             return { success: true, processed: 0, failed: 0 };
         }
         
-        const fixture = fixtures[0];
-        console.log(`\n📋 Processing fixture ID: ${fixture.fixture_id}`);
-        console.log(`   ${fixture.home_team} vs ${fixture.away_team} (Round ${fixture.round_num})`);
+        // Process games in a loop until queue is empty
+        let gamesInQueue = initialQueueSize;
+        let loopCount = 0;
         
-        try {
-            await processGame(fixture, connection);
-            processedCount++;
-        } catch (error) {
-            console.error(`❌ Failed to process game ${fixture.fixture_id}:`, error.message);
-            failedCount++;
+        while (gamesInQueue > 0) {
+            loopCount++;
+            console.log(`\n${'-'.repeat(50)}`);
+            console.log(`🔄 Processing cycle #${loopCount} (${gamesInQueue} games remaining)`);
+            console.log(`${'-'.repeat(50)}`);
+            
+            // Get one unprocessed fixture - ORDER BY round_num ASC for oldest first
+            const [fixtures] = await connection.execute(
+                `SELECT u.* 
+                 FROM unprocessed_fixtures u
+                 LEFT JOIN match_processing_status m ON u.fixture_id = m.fixture_id
+                 WHERE m.overall_status != 'processing' OR m.overall_status IS NULL
+                 ORDER BY u.round_num ASC, u.match_date ASC
+                 LIMIT 1`
+            );
+            
+            if (fixtures.length === 0) {
+                console.log('📭 No more unprocessed fixtures found - breaking loop');
+                break;
+            }
+            
+            const fixture = fixtures[0];
+            console.log(`\n📋 Processing fixture ID: ${fixture.fixture_id}`);
+            console.log(`   ${fixture.home_team} vs ${fixture.away_team} (Round ${fixture.round_num})`);
+            
+            try {
+                await processGame(fixture, connection);
+                totalProcessed++;
+                gamesProcessed++;
+                console.log(`   ✅ Game #${gamesProcessed} completed successfully`);
+            } catch (error) {
+                console.error(`   ❌ Game #${gamesProcessed + 1} failed:`, error.message);
+                totalFailed++;
+                // Continue to next game even if this one failed
+            }
+            
+            // Update remaining queue count
+            const [newCount] = await connection.execute(
+                'SELECT COUNT(*) as count FROM unprocessed_fixtures'
+            );
+            gamesInQueue = newCount[0].count;
+            console.log(`\n   📊 Queue remaining: ${gamesInQueue} games`);
         }
         
-        console.log(`\n📊 Processing complete:`);
-        console.log(`   ✅ Processed: ${processedCount}`);
-        console.log(`   ❌ Failed: ${failedCount}`);
+        console.log('\n' + '='.repeat(60));
+        console.log('📊 BATCH PROCESSING COMPLETE:');
+        console.log('='.repeat(60));
+        console.log(`   Initial queue size: ${initialQueueSize}`);
+        console.log(`   Successfully processed: ${totalProcessed}`);
+        console.log(`   Failed: ${totalFailed}`);
+        console.log(`   Final queue size: ${gamesInQueue}`);
+        console.log('='.repeat(60));
         
         return {
-            success: failedCount === 0,
-            processed: processedCount,
-            failed: failedCount
+            success: totalFailed === 0,
+            processed: totalProcessed,
+            failed: totalFailed
         };
         
     } catch (error) {
-        console.error('❌ Stats processing failed:', error.message);
+        console.error('\n❌ STATS PROCESSING FATAL ERROR:');
+        console.error('   Error:', error.message);
+        console.error('   Stack:', error.stack);
         throw error;
     }
+}
+
+// If running directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const runId = `process-${Date.now()}`;
+    
+    // Initialize connection and run
+    const run = async () => {
+        let connection = null;
+        try {
+            await dbClient.initialize();
+            connection = await dbClient.getConnection();
+            console.log('✅ Database connection established');
+            
+            await runStatsProcessing(runId, connection);
+            
+        } catch (error) {
+            console.error('❌ Fatal error:', error);
+            process.exit(1);
+        } finally {
+            if (connection) {
+                await connection.release();
+                console.log('✅ Database connection released');
+            }
+            await dbClient.close();
+        }
+    };
+    
+    run();
 }
