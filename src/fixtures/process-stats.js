@@ -55,11 +55,24 @@ async function fetchGameDetails(gameId) {
     }
     
     const data = await response.json();
+    
+    // DEBUG: Log the raw response
+    console.log(`   🔍 DEBUG - Raw response keys:`, Object.keys(data));
+    
     if (!data?.game) {
         console.error(`   ❌ No game data in response for game ${gameId}`);
         console.error(`   Response keys:`, Object.keys(data));
         throw new Error('No game data in response');
     }
+    
+    // DEBUG: Log the game data structure
+    console.log(`   🔍 DEBUG - Game data keys:`, Object.keys(data.game));
+    console.log(`   🔍 DEBUG - Home competitor:`, data.game.homeCompetitor?.name);
+    console.log(`   🔍 DEBUG - Away competitor:`, data.game.awayCompetitor?.name);
+    console.log(`   🔍 DEBUG - Home competitor score:`, data.game.homeCompetitor?.score);
+    console.log(`   🔍 DEBUG - Away competitor score:`, data.game.awayCompetitor?.score);
+    console.log(`   🔍 DEBUG - Has members:`, data.game.members ? 'yes' : 'no');
+    console.log(`   🔍 DEBUG - Members count:`, data.game.members?.length || 0);
     
     return data.game;
 }
@@ -96,12 +109,8 @@ async function processGame(game, connection) {
         try {
             gameData = await fetchGameDetails(fixtureId);
             
-            // DEBUG: Log the structure of gameData
-            console.log(`   🔍 DEBUG - Game data keys:`, Object.keys(gameData));
-            console.log(`   🔍 DEBUG - Home competitor:`, gameData.homeCompetitor?.name);
-            console.log(`   🔍 DEBUG - Away competitor:`, gameData.awayCompetitor?.name);
-            console.log(`   🔍 DEBUG - Has members:`, gameData.members ? 'yes' : 'no');
-            console.log(`   🔍 DEBUG - Members count:`, gameData.members?.length || 0);
+            // DEBUG: Log the structure right after fetch
+            console.log(`   🔍 DEBUG - After fetch - Game data keys:`, Object.keys(gameData));
             
             await connection.execute(
                 `UPDATE match_processing_status 
@@ -133,19 +142,17 @@ async function processGame(game, connection) {
         );
         
         try {
-            // DEBUG: Log the entire gameData structure before processing
-            console.log(`   🔍 DEBUG - Full gameData keys at Stage 2:`, Object.keys(gameData));
-            console.log(`   🔍 DEBUG - homeCompetitor details:`, JSON.stringify({
-                name: gameData.homeCompetitor?.name,
-                score: gameData.homeCompetitor?.score,
-                has_lineups: gameData.homeCompetitor?.lineups ? true : false,
-                lineups_members_count: gameData.homeCompetitor?.lineups?.members?.length || 0
-            }));
-            console.log(`   🔍 DEBUG - awayCompetitor details:`, JSON.stringify({
-                name: gameData.awayCompetitor?.name,
-                score: gameData.awayCompetitor?.score,
-                has_lineups: gameData.awayCompetitor?.lineups ? true : false,
-                lineups_members_count: gameData.awayCompetitor?.lineups?.members?.length || 0
+            // DEBUG: Log the full gameData structure before any processing
+            console.log(`   🔍 DEBUG - Full gameData before processing:`, JSON.stringify({
+                has_home: !!gameData.homeCompetitor,
+                has_away: !!gameData.awayCompetitor,
+                home_name: gameData.homeCompetitor?.name,
+                away_name: gameData.awayCompetitor?.name,
+                home_score: gameData.homeCompetitor?.score,
+                away_score: gameData.awayCompetitor?.score,
+                has_members: !!gameData.members,
+                members_count: gameData.members?.length || 0,
+                has_chartEvents: !!gameData.chartEvents
             }));
             
             // Extract data from gameData
