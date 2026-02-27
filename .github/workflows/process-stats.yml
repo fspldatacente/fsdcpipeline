@@ -1,37 +1,26 @@
-﻿name: FSDC Fixtures Pipeline
+﻿name: Process Stats Only
 
 on:
-  # Schedule is DISABLED for now - uncomment when ready
-  # schedule:
-  #   - cron: '15 * * * *'
   workflow_dispatch:
 
 jobs:
-  fixtures-pipeline:
+  process-stats:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '18'
         cache: 'npm'
-    
     - name: Install dependencies
       run: npm ci
-    
-    - name: Run Fixtures Pipeline
+    - name: Run Process Stats
       env:
         TIDB_HOST: ${{ secrets.TIDB_HOST }}
         TIDB_PORT: ${{ secrets.TIDB_PORT }}
         TIDB_USER: ${{ secrets.TIDB_USER }}
         TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
-      run: |
-        echo "🚀 Starting FSDC Fixtures Pipeline (Manual Run Only)"
-        echo "Started at: $(date)"
-        node src/fixtures/index.js
-        echo "Completed at: $(date)"
+      run: node src/fixtures/process-stats.js
