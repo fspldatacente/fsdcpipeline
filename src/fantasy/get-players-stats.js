@@ -13,7 +13,6 @@ const HEADERS = {
 };
 
 // Test mode: process only first 10 players
-const TEST_MODE = true; // Set to false for full run
 const TEST_LIMIT = 10;
 const DELAY_BETWEEN_PLAYERS = 1000; // 1 second delay to respect rate limits
 const DELAY_BETWEEN_ROUNDS = 100; // 100ms between round inserts
@@ -56,8 +55,6 @@ async function savePlayerRoundStats(playerId, roundData, connection, logger) {
         if (playerInfo.length === 0) {
             throw new Error(`Player ${playerId} not found in directory`);
         }
-        
-        const player = playerInfo[0];
         
         // Insert stats for this round
         await connection.execute(
@@ -169,12 +166,21 @@ export default async function runGetPlayersStats(runId, testMode = true) {
             [runId]
         );
         
-        // Get unprocessed players
-        const query = testMode 
-            ? 'SELECT id FROM fantasy_stats.unprocessed_players ORDER BY id LIMIT ?'
-            : 'SELECT id FROM fantasy_stats.unprocessed_players ORDER BY id';
-        
-        const [unprocessed] = await connection.execute(query, testMode ? [TEST_LIMIT] : []);
+        // Get unprocessed players - FIXED THE LIMIT ISSUE
+        let unprocessed;
+        if (testMode) {
+            // For test mode, use LIMIT with a numeric value directly
+            const [rows] = await connection.execute(
+                'SELECT id FROM fantasy_stats.unprocessed_players ORDER BY id LIMIT 10'
+            );
+            unprocessed = rows;
+        } else {
+            // For full mode, get all
+            const [rows] = await connection.execute(
+                'SELECT id FROM fantasy_stats.unprocessed_players ORDER BY id'
+            );
+            unprocessed = rows;
+        }
         
         console.log(`\n📊 Unprocessed players: ${unprocessed.length}`);
         
