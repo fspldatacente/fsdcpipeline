@@ -1,0 +1,40 @@
+# .github/workflows/get-players-stats.yml
+name: Get Players Stats
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode: test (first 10) or full (all players)'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - full
+
+jobs:
+  get-players-stats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max for full run
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run Get Players Stats
+      env:
+        TIDB_HOST: ${{ secrets.TIDB_HOST }}
+        TIDB_PORT: ${{ secrets.TIDB_PORT }}
+        TIDB_USER: ${{ secrets.TIDB_USER }}
+        TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
+      run: node src/fantasy/get-players-stats.js ${{ github.event.inputs.mode }}
