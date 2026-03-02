@@ -1,0 +1,43 @@
+# .github/workflows/update-penalties-scored.yml
+name: Update Penalties Scored
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "YES" to confirm running this one-time update'
+        required: true
+        default: ''
+
+jobs:
+  update-penalties:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # Should be plenty for 740 players with 1-second delay (~12-15 minutes)
+    
+    steps:
+    - name: Check confirmation
+      run: |
+        if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
+          echo "❌ Confirmation required. Type 'YES' to run this one-time update."
+          exit 1
+        fi
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run Update Penalties Scored
+      env:
+        TIDB_HOST: ${{ secrets.TIDB_HOST }}
+        TIDB_PORT: ${{ secrets.TIDB_PORT }}
+        TIDB_USER: ${{ secrets.TIDB_USER }}
+        TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
+      run: node src/fantasy/update-penalties-scored.js
