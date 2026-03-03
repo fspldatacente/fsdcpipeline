@@ -1,0 +1,40 @@
+# .github/workflows/match-players.yml
+name: Match Players
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode: test (first 100) or full (all players)'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - full
+
+jobs:
+  match-players:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours max for full run
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run Player Matching
+      env:
+        TIDB_HOST: ${{ secrets.TIDB_HOST }}
+        TIDB_PORT: ${{ secrets.TIDB_PORT }}
+        TIDB_USER: ${{ secrets.TIDB_USER }}
+        TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
+      run: node src/matching/match-players.js ${{ github.event.inputs.mode }}
