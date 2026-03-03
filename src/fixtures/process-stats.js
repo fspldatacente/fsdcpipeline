@@ -49,40 +49,48 @@ function getPenaltiesScored(player) {
 function getYellowCardsFromEvents(playerId, gameEvents) {
     if (!gameEvents || !Array.isArray(gameEvents)) return 0;
     
-    const yellowEvents = gameEvents.filter(event => 
+    // Count all regular yellow card events (type 2)
+    const regularYellows = gameEvents.filter(event => 
         event.playerId === playerId && 
         event.eventType && 
         event.eventType.id === 2
-    );
+    ).length;
     
-    if (yellowEvents.length > 0) {
-        console.log(`      🔍 Player ${playerId} has ${yellowEvents.length} yellow events`);
-        yellowEvents.forEach((event, index) => {
-            console.log(`         Yellow ${index + 1} at ${event.gameTimeDisplay}`);
-        });
+    // Check for red cards that are from second yellows (subTypeId 21)
+    const secondYellowReds = gameEvents.filter(event => 
+        event.playerId === playerId && 
+        event.eventType && 
+        event.eventType.id === 3 &&
+        event.eventType.subTypeId === 21 // Second Yellow Card
+    ).length;
+    
+    // For each second yellow red, we need to add an extra yellow
+    // (because the first yellow was already counted, and this represents the second)
+    const totalYellows = regularYellows + secondYellowReds;
+    
+    if (totalYellows > 0) {
+        console.log(`      🔍 Player ${playerId}: ${regularYellows} regular yellows + ${secondYellowReds} second yellows = ${totalYellows} total yellows`);
     }
     
-    return yellowEvents.length;
+    return totalYellows;
 }
 
 // Helper function to count red cards for a player from game events
 function getRedCardsFromEvents(playerId, gameEvents) {
     if (!gameEvents || !Array.isArray(gameEvents)) return 0;
     
-    const redEvents = gameEvents.filter(event => 
+    // Count ALL red card events (type 3) regardless of subtype
+    const reds = gameEvents.filter(event => 
         event.playerId === playerId && 
         event.eventType && 
         event.eventType.id === 3
-    );
+    ).length;
     
-    if (redEvents.length > 0) {
-        console.log(`      🔍 Player ${playerId} has ${redEvents.length} red events`);
-        redEvents.forEach((event, index) => {
-            console.log(`         Red ${index + 1} at ${event.gameTimeDisplay}`);
-        });
+    if (reds > 0) {
+        console.log(`      🔍 Player ${playerId} has ${reds} red events`);
     }
     
-    return redEvents.length;
+    return reds;
 }
 
 // Fetch detailed game data from 365scores
@@ -230,7 +238,7 @@ async function processGame(game, connection) {
                 const playerIdStr = String(player.id || '');
                 const shirtNumber = player.shirtNum || null;
                 
-                // Get yellow and red cards from events
+                // Get yellow and red cards from events (UPDATED LOGIC)
                 const yellowCards = getYellowCardsFromEvents(player.id, events);
                 const redCards = getRedCardsFromEvents(player.id, events);
                 
