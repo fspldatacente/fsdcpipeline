@@ -2,6 +2,7 @@
 // Matches score365 players to RSL players by comparing stats
 // Handles both outfield players and goalkeepers separately
 // Progressive round-by-round elimination until unique match found
+// Requires at least 3 rounds of comparison before declaring a match
 // No team filtering - compares against ALL RSL players
 // Stats compared:
 //   Outfield: minutes, goals, yellow cards, red cards
@@ -154,6 +155,7 @@ async function getRSLGoalkeepers(connection) {
 }
 
 // Find matches for a player using progressive round elimination
+// Requires at least MIN_ROUNDS_TO_MATCH before declaring a match
 function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     const playerName = score365Player.player_name;
     const score365Rounds = score365Player.rounds_data || {};
@@ -175,15 +177,18 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     logger.debug(`   Initial pool: ${potentialMatches.length} players`);
     
     // Track which rounds we've compared
-    const roundsCompared = [];
+    let roundsCompared = 0;
     let finalMatch = null;
     
     // Progressive elimination through each round
+    // Only declare a match if:
+    // 1. Only one player remains
+    // 2. We've compared at least MIN_ROUNDS_TO_MATCH rounds
     for (let i = 0; i < playedRounds.length; i++) {
         const roundNum = playedRounds[i];
         const score365Round = score365Rounds[roundNum];
         
-        roundsCompared.push(roundNum);
+        roundsCompared++;
         
         // Filter players who played this round and match all stats
         potentialMatches = potentialMatches.filter(rslPlayer => {
@@ -193,10 +198,10 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
             return compareFunc(score365Round, rslRound);
         });
         
-        logger.debug(`   After round ${roundNum}: ${potentialMatches.length} players remain`);
+        logger.debug(`   After round ${roundNum}: ${potentialMatches.length} players remain (${roundsCompared} rounds compared)`);
         
-        // If only one match left, we're done
-        if (potentialMatches.length === 1) {
+        // Only consider it a match if we've compared enough rounds
+        if (potentialMatches.length === 1 && roundsCompared >= MIN_ROUNDS_TO_MATCH) {
             finalMatch = potentialMatches[0];
             break;
         }
@@ -209,10 +214,14 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     
     // Determine result based on final state
     if (potentialMatches.length === 0) {
-        return { status: 'no_match', rounds_compared: roundsCompared };
+        return { 
+            status: 'no_match', 
+            rounds_compared: roundsCompared 
+        };
     }
     
-    if (potentialMatches.length === 1) {
+    if (potentialMatches.length === 1 && roundsCompared >= MIN_ROUNDS_TO_MATCH) {
+        // Genuine match after enough rounds
         const match = potentialMatches[0];
         return {
             status: 'matched',
@@ -220,14 +229,15 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
                 rsl_id: match.rsl_id,
                 rsl_name: match.rsl_name || '',
                 rsl_team_id: match.rsl_team_id,
-                rounds_compared: roundsCompared.length,
+                rounds_compared: roundsCompared,
                 total_possible_rounds: playedRounds.length
             },
             rounds_compared: roundsCompared
         };
     }
     
-    // Multiple matches remain after all rounds
+    // If we have one player but not enough rounds, or multiple players remain
+    // This is ambiguous - needs manual review
     return {
         status: 'ambiguous',
         matches: potentialMatches.map(m => ({
@@ -335,7 +345,7 @@ async function processPlayerBatch(players, playerType, rslPlayersMap, compareFun
                 stats.manualNeeded++;
                 
             } else if (result.status === 'no_match') {
-                console.log(`   ❌ No matches found after ${result.rounds_compared.length} rounds`);
+                console.log(`   ❌ No matches found after ${result.rounds_compared} rounds`);
                 
                 await connection.execute(
                     `INSERT INTO matching_names.manual_matching_players 
@@ -387,7 +397,7 @@ async function processPlayerBatch(players, playerType, rslPlayersMap, compareFun
                 stats.matched++;
                 
             } else if (result.status === 'ambiguous') {
-                console.log(`   ⚠️ Multiple matches found after ${result.rounds_compared.length} rounds - needs manual review`);
+                console.log(`   ⚠️ Multiple matches found after ${result.rounds_compared} rounds - needs manual review`);
                 result.matches.slice(0, 3).forEach((m, idx) => {
                     console.log(`      ${idx + 1}. ${m.rsl_name}`);
                 });
@@ -460,7 +470,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         await dbClient.initialize();
         connection = await dbClient.getConnection();
         
-        // Create sync log entry - Note: error_count column name
+        // Create sync log entry
         await connection.execute(
             `INSERT INTO matching_names.matching_log (run_id, function_name, status)
              VALUES (?, 'match-players', 'running')`,
@@ -584,16 +594,16 @@ export default async function runPlayerMatching(runId, testMode = true) {
         
         console.log(`\n   📋 Remaining in queue: ${remainingOutfield[0].count} outfield, ${remainingGks[0].count} GKs`);
         
-        // Update sync log - Note: using error_count instead of errors
+        // Update sync log - REMOVED error_count since it doesn't exist in the table
         await connection.execute(
             `UPDATE matching_names.matching_log 
              SET status = ?, players_processed = ?, players_matched = ?, 
-                 players_manual_needed = ?, players_no_stats = ?, error_count = ?, 
+                 players_manual_needed = ?, players_no_stats = ?, 
                  completed_at = NOW()
              WHERE run_id = ?`,
             [
                 stats.errors === 0 ? 'completed' : 'completed_with_errors',
-                totalPlayers, stats.matched, stats.manualNeeded, stats.noStats, stats.errors,
+                totalPlayers, stats.matched, stats.manualNeeded, stats.noStats,
                 runId
             ]
         );
