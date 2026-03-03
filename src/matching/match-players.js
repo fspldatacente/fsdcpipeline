@@ -526,7 +526,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         await dbClient.initialize();
         connection = await dbClient.getConnection();
         
-        // Create sync log entry
+        // Create sync log entry - using parameter for run_id only (LIMIT not used here)
         await connection.execute(
             `INSERT INTO matching_names.matching_log (run_id, function_name, status)
              VALUES (?, 'match-players', 'running')`,
@@ -545,7 +545,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         console.log(`   ✅ Loaded ${Object.keys(rslGks.byPlayer).length} goalkeepers`);
         
         // =========================================================
-        // STEP 2: Get unprocessed players
+        // STEP 2: Get unprocessed players - FIXED: NO PARAMETERS IN LIMIT
         // =========================================================
         console.log('\n🔍 Step 2: Fetching unprocessed players...');
         
@@ -553,20 +553,18 @@ export default async function runPlayerMatching(runId, testMode = true) {
         let gkPlayers = [];
         
         if (testMode) {
-            // Test mode: 80 outfield + 20 GKs
+            // Test mode: 80 outfield + 20 GKs - HARD-CODED LIMITS
             const [outfield] = await connection.execute(
-                'SELECT * FROM matching_names.unprocessed_outfield_players WHERE status = "pending" ORDER BY id LIMIT ?',
-                [TEST_OUTFIELD_LIMIT]
+                'SELECT * FROM matching_names.unprocessed_outfield_players WHERE status = "pending" ORDER BY id LIMIT 80'
             );
             outfieldPlayers = outfield;
             
             const [gks] = await connection.execute(
-                'SELECT * FROM matching_names.unprocessed_gk_players WHERE status = "pending" ORDER BY id LIMIT ?',
-                [TEST_GK_LIMIT]
+                'SELECT * FROM matching_names.unprocessed_gk_players WHERE status = "pending" ORDER BY id LIMIT 20'
             );
             gkPlayers = gks;
         } else {
-            // Full mode: get all
+            // Full mode: get all - NO LIMIT CLAUSE
             const [outfield] = await connection.execute(
                 'SELECT * FROM matching_names.unprocessed_outfield_players WHERE status = "pending" ORDER BY id'
             );
@@ -632,7 +630,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         console.log(`   📊 No stats (0 minutes): ${stats.noStats}`);
         console.log(`   ❌ Errors: ${stats.errors}`);
         
-        // Check remaining queues
+        // Check remaining queues - NO LIMIT CLAUSES HERE
         const [remainingOutfield] = await connection.execute(
             'SELECT COUNT(*) as count FROM matching_names.unprocessed_outfield_players WHERE status = "pending"'
         );
@@ -642,7 +640,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         
         console.log(`\n   📋 Remaining in queue: ${remainingOutfield[0].count} outfield, ${remainingGks[0].count} GKs`);
         
-        // Update sync log
+        // Update sync log - using parameters only for values, not in LIMIT
         await connection.execute(
             `UPDATE matching_names.matching_log 
              SET status = ?, players_processed = ?, players_matched = ?, 
