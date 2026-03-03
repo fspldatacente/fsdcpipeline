@@ -248,18 +248,24 @@ export default async function runPlayerMatching(runId, testMode = true) {
         console.log(`   ✅ Loaded ${Object.keys(byPlayer).length} RSL players`);
         
         // =========================================================
-        // STEP 2: Get unprocessed score365 players
+        // STEP 2: Get unprocessed score365 players - FIXED LIMIT ISSUE
         // =========================================================
         console.log('\n🔍 Step 2: Fetching unprocessed score365 players...');
         
-        let query = 'SELECT * FROM matching_names.unprocessed_score365_players WHERE status = "pending" ORDER BY id';
+        let unprocessed;
         if (testMode) {
-            query += ' LIMIT ?';
+            // For test mode, use hard-coded LIMIT 100
+            const [rows] = await connection.execute(
+                'SELECT * FROM matching_names.unprocessed_score365_players WHERE status = "pending" ORDER BY id LIMIT 100'
+            );
+            unprocessed = rows;
+        } else {
+            // For full mode, get all
+            const [rows] = await connection.execute(
+                'SELECT * FROM matching_names.unprocessed_score365_players WHERE status = "pending" ORDER BY id'
+            );
+            unprocessed = rows;
         }
-        
-        const [unprocessed] = testMode 
-            ? await connection.execute(query, [TEST_LIMIT])
-            : await connection.execute(query);
         
         console.log(`   📊 Found ${unprocessed.length} unprocessed players`);
         
@@ -268,7 +274,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
             
             await connection.execute(
                 `UPDATE matching_names.matching_log 
-                 SET status = 'success', completed_at = NOW()
+                 SET status = 'completed', completed_at = NOW()
                  WHERE run_id = ?`,
                 [runId]
             );
