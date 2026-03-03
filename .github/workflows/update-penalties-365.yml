@@ -1,0 +1,43 @@
+# .github/workflows/update-penalties-365.yml
+name: Update Penalties from 365scores
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "YES" to confirm running this update'
+        required: true
+        default: ''
+
+jobs:
+  update-penalties:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # For all fixtures
+    
+    steps:
+    - name: Check confirmation
+      run: |
+        if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
+          echo "❌ Confirmation required. Type 'YES' to run this update."
+          exit 1
+        fi
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run Update Penalties from 365scores
+      env:
+        TIDB_HOST: ${{ secrets.TIDB_HOST }}
+        TIDB_PORT: ${{ secrets.TIDB_PORT }}
+        TIDB_USER: ${{ secrets.TIDB_USER }}
+        TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
+      run: node src/fixtures/update-penalties-from-365scores.js
