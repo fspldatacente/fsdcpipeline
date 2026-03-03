@@ -1,8 +1,8 @@
 // src/matching/match-players.js
 // Matches score365 players to RSL players by comparing stats
-// Uses 5 key stats: team, minutes, goals, yellow cards, red cards
-// Processes players from unprocessed_score365_players table
-// Outputs to matched_players and manual_matching_players tables
+// Handles both outfield players and goalkeepers separately
+// Outfield stats: team, minutes, goals, yellow cards, red cards
+// GK stats: team, minutes, saves, yellow cards, red cards
 
 import dbClient from '../database/tidb-client.js';
 import createLogger from '../utils/logger.js';
@@ -11,16 +11,10 @@ import createLogger from '../utils/logger.js';
 const BATCH_SIZE = 50; // Log progress every 50 players
 const MIN_ROUNDS_TO_MATCH = 3; // Need at least 3 rounds with stats to auto-match
 const CONFIDENCE_THRESHOLD = 0.66; // 66% match required (2 out of 3 rounds)
-const TEST_LIMIT = 100; // Number of players to process in test mode
 
-// Stats to compare (in order of importance)
-const COMPARE_STATS = [
-    'team',      // Must match exactly (using team mapping)
-    'minutes',   // Should match exactly
-    'goals',     // Should match exactly
-    'yellow_cards', // Should match exactly
-    'red_cards'     // Should match exactly (with special case for second yellows)
-];
+// Test mode splits: 80 outfield + 20 goalkeepers = 100 total
+const TEST_OUTFIELD_LIMIT = 80;
+const TEST_GK_LIMIT = 20;
 
 // Special case for second yellows (365scores: YC=2, RC=1 | RSL: YC=0, RC=1)
 function compareCards(score365YC, score365RC, rslYC, rslRC) {
@@ -37,8 +31,8 @@ function compareCards(score365YC, score365RC, rslYC, rslRC) {
     return false;
 }
 
-// Compare a single round's stats
-function compareRound(score365Round, rslRound) {
+// Compare a single round for outfield player
+function compareOutfieldRound(score365Round, rslRound) {
     let matches = 0;
     let totalCompared = 0;
     
@@ -70,10 +64,43 @@ function compareRound(score365Round, rslRound) {
     };
 }
 
-// Get all RSL players grouped by team for faster lookup
-async function getRSLPlayersByTeam(connection) {
-    const logger = createLogger('getRSLPlayers');
-    logger.info('Loading RSL players by team...');
+// Compare a single round for goalkeeper
+function compareGkRound(score365Round, rslRound) {
+    let matches = 0;
+    let totalCompared = 0;
+    
+    // Compare minutes
+    if (score365Round.minutes === rslRound.minutes) {
+        matches++;
+    }
+    totalCompared++;
+    
+    // Compare saves
+    if (score365Round.saves === rslRound.saves) {
+        matches++;
+    }
+    totalCompared++;
+    
+    // Compare cards with special logic
+    if (compareCards(
+        score365Round.yellow_cards, score365Round.red_cards,
+        rslRound.yellow_cards, rslRound.red_cards
+    )) {
+        matches++;
+    }
+    totalCompared++;
+    
+    return {
+        matches,
+        totalCompared,
+        ratio: matches / totalCompared
+    };
+}
+
+// Get all RSL outfield players grouped by team
+async function getRSLOutfieldPlayers(connection) {
+    const logger = createLogger('getRSLOutfield');
+    logger.info('Loading RSL outfield players by team...');
     
     const [players] = await connection.execute(`
         SELECT 
@@ -90,7 +117,7 @@ async function getRSLPlayersByTeam(connection) {
         FROM fantasy_stats.players_directory pd
         JOIN fantasy_stats.players_fantasy_stats pfs ON pd.id = pfs.id
         JOIN matching_names.matched_teams mt ON pd.team = mt.rsl_team_id
-        WHERE pfs.minutes > 0
+        WHERE pfs.minutes > 0 AND pd.element_type != 1  -- Exclude goalkeepers
         ORDER BY pd.id, pfs.round
     `);
     
@@ -99,13 +126,11 @@ async function getRSLPlayersByTeam(connection) {
     const byPlayer = {};
     
     players.forEach(row => {
-        // Group by score365 team name (for filtering)
         const teamKey = row.score365_team_name;
         if (!byTeam[teamKey]) {
             byTeam[teamKey] = {};
         }
         
-        // Group by player
         const playerKey = row.rsl_id;
         if (!byTeam[teamKey][playerKey]) {
             byTeam[teamKey][playerKey] = {
@@ -117,7 +142,6 @@ async function getRSLPlayersByTeam(connection) {
             };
         }
         
-        // Add round data
         byTeam[teamKey][playerKey].rounds[row.round] = {
             minutes: row.minutes,
             goals: row.goals,
@@ -125,31 +149,88 @@ async function getRSLPlayersByTeam(connection) {
             red_cards: row.red_cards
         };
         
-        // Also store in flat byPlayer map for quick lookup
         byPlayer[playerKey] = byTeam[teamKey][playerKey];
     });
     
-    logger.success(`Loaded ${Object.keys(byPlayer).length} RSL players across ${Object.keys(byTeam).length} teams`);
+    logger.success(`Loaded ${Object.keys(byPlayer).length} RSL outfield players across ${Object.keys(byTeam).length} teams`);
+    return { byTeam, byPlayer };
+}
+
+// Get all RSL goalkeepers grouped by team
+async function getRSLGoalkeepers(connection) {
+    const logger = createLogger('getRSLGKs');
+    logger.info('Loading RSL goalkeepers by team...');
+    
+    const [players] = await connection.execute(`
+        SELECT 
+            pd.id as rsl_id,
+            pd.web_name as rsl_name,
+            pd.team as rsl_team_id,
+            mt.rsl_name as rsl_team_name,
+            mt.score365_name as score365_team_name,
+            pfs.round,
+            pfs.minutes,
+            pfs.saves,
+            pfs.yellow_cards,
+            pfs.red_cards
+        FROM fantasy_stats.players_directory pd
+        JOIN fantasy_stats.players_fantasy_stats pfs ON pd.id = pfs.id
+        JOIN matching_names.matched_teams mt ON pd.team = mt.rsl_team_id
+        WHERE pfs.minutes > 0 AND pd.element_type = 1  -- Only goalkeepers
+        ORDER BY pd.id, pfs.round
+    `);
+    
+    // Group by team first, then by player
+    const byTeam = {};
+    const byPlayer = {};
+    
+    players.forEach(row => {
+        const teamKey = row.score365_team_name;
+        if (!byTeam[teamKey]) {
+            byTeam[teamKey] = {};
+        }
+        
+        const playerKey = row.rsl_id;
+        if (!byTeam[teamKey][playerKey]) {
+            byTeam[teamKey][playerKey] = {
+                rsl_id: row.rsl_id,
+                rsl_name: row.rsl_name,
+                rsl_team_id: row.rsl_team_id,
+                rsl_team_name: row.rsl_team_name,
+                rounds: {}
+            };
+        }
+        
+        byTeam[teamKey][playerKey].rounds[row.round] = {
+            minutes: row.minutes,
+            saves: row.saves,
+            yellow_cards: row.yellow_cards,
+            red_cards: row.red_cards
+        };
+        
+        byPlayer[playerKey] = byTeam[teamKey][playerKey];
+    });
+    
+    logger.success(`Loaded ${Object.keys(byPlayer).length} RSL goalkeepers across ${Object.keys(byTeam).length} teams`);
     return { byTeam, byPlayer };
 }
 
 // Check if a player has enough data to be matched
-function hasEnoughData(score365Player) {
-    const roundsWithMinutes = Object.values(score365Player.rounds_data || {})
+function hasEnoughData(player) {
+    const roundsWithMinutes = Object.values(player.rounds_data || {})
         .filter(r => r.minutes > 0).length;
     
     return roundsWithMinutes >= MIN_ROUNDS_TO_MATCH;
 }
 
-// Find potential matches for a score365 player
-async function findMatches(score365Player, rslPlayersByTeam, logger) {
+// Find potential matches for an outfield player
+async function findOutfieldMatches(score365Player, rslPlayersByTeam, logger) {
     const playerName = score365Player.player_name;
     const score365Team = score365Player.team_name;
     const score365Rounds = score365Player.rounds_data || {};
     
     logger.debug(`   Finding matches for ${playerName} (${score365Team})`);
     
-    // Step 1: Get potential RSL players from the same team (using team mapping)
     const potentialRSLPlayers = rslPlayersByTeam[score365Team] || {};
     const potentialIds = Object.keys(potentialRSLPlayers);
     
@@ -158,9 +239,6 @@ async function findMatches(score365Player, rslPlayersByTeam, logger) {
         return [];
     }
     
-    logger.debug(`   Found ${potentialIds.length} potential RSL players from same team`);
-    
-    // Step 2: Compare rounds
     const matches = [];
     
     for (const rslId of potentialIds) {
@@ -186,7 +264,7 @@ async function findMatches(score365Player, rslPlayersByTeam, logger) {
             const score365Round = score365Rounds[roundNum];
             const rslRound = rslPlayer.rounds[roundNum];
             
-            const comparison = compareRound(score365Round, rslRound);
+            const comparison = compareOutfieldRound(score365Round, rslRound);
             totalMatches += comparison.matches;
             totalCompared += comparison.totalCompared;
         }
@@ -207,10 +285,223 @@ async function findMatches(score365Player, rslPlayersByTeam, logger) {
         }
     }
     
-    // Sort by confidence (highest first)
     matches.sort((a, b) => b.confidence - a.confidence);
-    
     return matches;
+}
+
+// Find potential matches for a goalkeeper
+async function findGkMatches(score365Player, rslPlayersByTeam, logger) {
+    const playerName = score365Player.player_name;
+    const score365Team = score365Player.team_name;
+    const score365Rounds = score365Player.rounds_data || {};
+    
+    logger.debug(`   Finding matches for GK ${playerName} (${score365Team})`);
+    
+    const potentialRSLPlayers = rslPlayersByTeam[score365Team] || {};
+    const potentialIds = Object.keys(potentialRSLPlayers);
+    
+    if (potentialIds.length === 0) {
+        logger.debug(`   No RSL goalkeepers found for team ${score365Team}`);
+        return [];
+    }
+    
+    const matches = [];
+    
+    for (const rslId of potentialIds) {
+        const rslPlayer = potentialRSLPlayers[rslId];
+        let commonRounds = [];
+        let totalMatches = 0;
+        let totalCompared = 0;
+        
+        // Find common rounds where both players have minutes > 0
+        Object.entries(score365Rounds).forEach(([roundNum, score365Round]) => {
+            if (score365Round.minutes === 0) return;
+            
+            const rslRound = rslPlayer.rounds[roundNum];
+            if (rslRound && rslRound.minutes > 0) {
+                commonRounds.push(parseInt(roundNum));
+            }
+        });
+        
+        if (commonRounds.length === 0) continue;
+        
+        // Compare each common round
+        for (const roundNum of commonRounds) {
+            const score365Round = score365Rounds[roundNum];
+            const rslRound = rslPlayer.rounds[roundNum];
+            
+            const comparison = compareGkRound(score365Round, rslRound);
+            totalMatches += comparison.matches;
+            totalCompared += comparison.totalCompared;
+        }
+        
+        const confidence = totalMatches / totalCompared;
+        
+        if (commonRounds.length >= MIN_ROUNDS_TO_MATCH && confidence >= CONFIDENCE_THRESHOLD) {
+            matches.push({
+                rsl_id: rslPlayer.rsl_id,
+                rsl_name: rslPlayer.rsl_name,
+                rsl_team_name: rslPlayer.rsl_team_name,
+                rounds_compared: commonRounds.length,
+                matches: totalMatches,
+                total_compared: totalCompared,
+                confidence: confidence,
+                common_rounds: commonRounds
+            });
+        }
+    }
+    
+    matches.sort((a, b) => b.confidence - a.confidence);
+    return matches;
+}
+
+// Process a batch of players
+async function processPlayerBatch(players, playerType, rslData, connection, logger, stats) {
+    for (let i = 0; i < players.length; i++) {
+        const player = players[i];
+        const playerNum = stats.processed + i + 1;
+        const totalPlayers = stats.totalPlayers;
+        
+        console.log(`\n📋 [${playerNum}/${totalPlayers}] Processing ${playerType}: ${player.player_name} (${player.team_name})`);
+        console.log(`   Total minutes: ${player.total_minutes}, Rounds played: ${player.rounds_played}`);
+        
+        try {
+            // Check if player has any minutes
+            if (!player.has_played) {
+                console.log(`   ⚠️ Player has no minutes - moving to manual matching`);
+                
+                await connection.execute(
+                    `INSERT INTO matching_names.manual_matching_players 
+                     (player_name, team_name, reason, total_minutes, rounds_available, player_type)
+                     VALUES (?, ?, 'no_stats', ?, ?, ?)`,
+                    [player.player_name, player.team_name, player.total_minutes, player.rounds_played, playerType]
+                );
+                
+                await connection.execute(
+                    `UPDATE matching_names.${playerType === 'outfield' ? 'unprocessed_outfield_players' : 'unprocessed_gk_players'}
+                     SET status = 'manual_needed' WHERE id = ?`,
+                    [player.id]
+                );
+                
+                stats.noStats++;
+                continue;
+            }
+            
+            // Check if player has enough data
+            if (!hasEnoughData(player)) {
+                console.log(`   ⚠️ Player has only ${player.rounds_played} rounds with minutes - need at least ${MIN_ROUNDS_TO_MATCH}`);
+                
+                await connection.execute(
+                    `INSERT INTO matching_names.manual_matching_players 
+                     (player_name, team_name, reason, total_minutes, rounds_available, player_type)
+                     VALUES (?, ?, 'insufficient_rounds', ?, ?, ?)`,
+                    [player.player_name, player.team_name, player.total_minutes, player.rounds_played, playerType]
+                );
+                
+                await connection.execute(
+                    `UPDATE matching_names.${playerType === 'outfield' ? 'unprocessed_outfield_players' : 'unprocessed_gk_players'}
+                     SET status = 'manual_needed' WHERE id = ?`,
+                    [player.id]
+                );
+                
+                stats.manualNeeded++;
+                continue;
+            }
+            
+            // Find matches based on player type
+            const matches = playerType === 'outfield' 
+                ? await findOutfieldMatches(player, rslData, logger)
+                : await findGkMatches(player, rslData, logger);
+            
+            if (matches.length === 0) {
+                console.log(`   ❌ No matches found`);
+                
+                await connection.execute(
+                    `INSERT INTO matching_names.manual_matching_players 
+                     (player_name, team_name, reason, total_minutes, rounds_available, player_type, potential_matches)
+                     VALUES (?, ?, 'no_match_found', ?, ?, ?, ?)`,
+                    [player.player_name, player.team_name, player.total_minutes, player.rounds_played, playerType, JSON.stringify(matches.slice(0, 3))]
+                );
+                
+                await connection.execute(
+                    `UPDATE matching_names.${playerType === 'outfield' ? 'unprocessed_outfield_players' : 'unprocessed_gk_players'}
+                     SET status = 'manual_needed' WHERE id = ?`,
+                    [player.id]
+                );
+                
+                stats.manualNeeded++;
+                
+            } else if (matches.length === 1) {
+                const match = matches[0];
+                console.log(`   ✅ MATCHED with ${match.rsl_name} (confidence: ${(match.confidence * 100).toFixed(1)}%)`);
+                console.log(`      Rounds compared: ${match.rounds_compared}, Matches: ${match.matches}/${match.total_compared}`);
+                
+                await connection.execute(
+                    `INSERT INTO matching_names.matched_players 
+                     (score365_name, score365_team, rsl_name, rsl_player_id, rsl_team_id, player_type,
+                      confidence_score, rounds_matched, rounds_compared, match_method)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto')`,
+                    [
+                        player.player_name, player.team_name, 
+                        match.rsl_name, match.rsl_id, match.rsl_team_id, playerType,
+                        match.confidence, match.matches, match.total_compared
+                    ]
+                );
+                
+                await connection.execute(
+                    `UPDATE matching_names.${playerType === 'outfield' ? 'unprocessed_outfield_players' : 'unprocessed_gk_players'}
+                     SET status = 'matched' WHERE id = ?`,
+                    [player.id]
+                );
+                
+                stats.matched++;
+                
+            } else {
+                console.log(`   ⚠️ Multiple matches found (${matches.length}) - needs manual review`);
+                matches.slice(0, 3).forEach((m, idx) => {
+                    console.log(`      ${idx + 1}. ${m.rsl_name} (${(m.confidence * 100).toFixed(1)}%)`);
+                });
+                
+                await connection.execute(
+                    `INSERT INTO matching_names.manual_matching_players 
+                     (player_name, team_name, reason, total_minutes, rounds_available, player_type, potential_matches)
+                     VALUES (?, ?, 'ambiguous_match', ?, ?, ?, ?)`,
+                    [
+                        player.player_name, player.team_name, 
+                        player.total_minutes, player.rounds_played, playerType,
+                        JSON.stringify(matches.slice(0, 5))
+                    ]
+                );
+                
+                await connection.execute(
+                    `UPDATE matching_names.${playerType === 'outfield' ? 'unprocessed_outfield_players' : 'unprocessed_gk_players'}
+                     SET status = 'manual_needed' WHERE id = ?`,
+                    [player.id]
+                );
+                
+                stats.manualNeeded++;
+            }
+            
+        } catch (error) {
+            logger.error(`   ❌ Error processing ${playerType} ${player.player_name}:`, error.message);
+            stats.errors++;
+            
+            await connection.execute(
+                `INSERT INTO matching_names.directory_errors_ids (id, error_message)
+                 VALUES (?, ?)`,
+                [player.id, error.message.substring(0, 500)]
+            );
+        }
+        
+        // Log progress
+        if ((playerNum) % BATCH_SIZE === 0) {
+            console.log(`\n📊 Progress: ${playerNum}/${totalPlayers} processed`);
+            console.log(`   ✅ Matched: ${stats.matched}, ⚠️ Manual: ${stats.manualNeeded}, ❌ Errors: ${stats.errors}`);
+        }
+    }
+    
+    stats.processed += players.length;
+    return stats;
 }
 
 // Main function
@@ -225,7 +516,9 @@ export default async function runPlayerMatching(runId, testMode = true) {
     console.log(`   Time: ${new Date().toISOString()}`);
     console.log(`   Min rounds to match: ${MIN_ROUNDS_TO_MATCH}`);
     console.log(`   Confidence threshold: ${CONFIDENCE_THRESHOLD * 100}%`);
-    if (testMode) console.log(`   Test limit: ${TEST_LIMIT} players`);
+    if (testMode) {
+        console.log(`   Test mode: ${TEST_OUTFIELD_LIMIT} outfield + ${TEST_GK_LIMIT} goalkeepers`);
+    }
     console.log('-'.repeat(60));
     
     let connection;
@@ -241,35 +534,54 @@ export default async function runPlayerMatching(runId, testMode = true) {
         );
         
         // =========================================================
-        // STEP 1: Load RSL players data
+        // STEP 1: Load RSL data
         // =========================================================
         console.log('\n🔍 Step 1: Loading RSL players data...');
-        const { byTeam, byPlayer } = await getRSLPlayersByTeam(connection);
-        console.log(`   ✅ Loaded ${Object.keys(byPlayer).length} RSL players`);
+        
+        const rslOutfield = await getRSLOutfieldPlayers(connection);
+        const rslGks = await getRSLGoalkeepers(connection);
+        
+        console.log(`   ✅ Loaded ${Object.keys(rslOutfield.byPlayer).length} outfield players`);
+        console.log(`   ✅ Loaded ${Object.keys(rslGks.byPlayer).length} goalkeepers`);
         
         // =========================================================
-        // STEP 2: Get unprocessed score365 players - FIXED LIMIT ISSUE
+        // STEP 2: Get unprocessed players
         // =========================================================
-        console.log('\n🔍 Step 2: Fetching unprocessed score365 players...');
+        console.log('\n🔍 Step 2: Fetching unprocessed players...');
         
-        let unprocessed;
+        let outfieldPlayers = [];
+        let gkPlayers = [];
+        
         if (testMode) {
-            // For test mode, use hard-coded LIMIT 100
-            const [rows] = await connection.execute(
-                'SELECT * FROM matching_names.unprocessed_score365_players WHERE status = "pending" ORDER BY id LIMIT 100'
+            // Test mode: 80 outfield + 20 GKs
+            const [outfield] = await connection.execute(
+                'SELECT * FROM matching_names.unprocessed_outfield_players WHERE status = "pending" ORDER BY id LIMIT ?',
+                [TEST_OUTFIELD_LIMIT]
             );
-            unprocessed = rows;
+            outfieldPlayers = outfield;
+            
+            const [gks] = await connection.execute(
+                'SELECT * FROM matching_names.unprocessed_gk_players WHERE status = "pending" ORDER BY id LIMIT ?',
+                [TEST_GK_LIMIT]
+            );
+            gkPlayers = gks;
         } else {
-            // For full mode, get all
-            const [rows] = await connection.execute(
-                'SELECT * FROM matching_names.unprocessed_score365_players WHERE status = "pending" ORDER BY id'
+            // Full mode: get all
+            const [outfield] = await connection.execute(
+                'SELECT * FROM matching_names.unprocessed_outfield_players WHERE status = "pending" ORDER BY id'
             );
-            unprocessed = rows;
+            outfieldPlayers = outfield;
+            
+            const [gks] = await connection.execute(
+                'SELECT * FROM matching_names.unprocessed_gk_players WHERE status = "pending" ORDER BY id'
+            );
+            gkPlayers = gks;
         }
         
-        console.log(`   📊 Found ${unprocessed.length} unprocessed players`);
+        const totalPlayers = outfieldPlayers.length + gkPlayers.length;
+        console.log(`   📊 Found ${outfieldPlayers.length} outfield players, ${gkPlayers.length} goalkeepers (Total: ${totalPlayers})`);
         
-        if (unprocessed.length === 0) {
+        if (totalPlayers === 0) {
             console.log('\n📭 No players to process - exiting');
             
             await connection.execute(
@@ -283,160 +595,29 @@ export default async function runPlayerMatching(runId, testMode = true) {
         }
         
         // =========================================================
-        // STEP 3: Process each player
+        // STEP 3: Process players
         // =========================================================
         console.log('\n⚙️ Step 3: Processing players...');
         
-        let matched = 0;
-        let manualNeeded = 0;
-        let noStats = 0;
-        let errors = 0;
-        const results = [];
+        const stats = {
+            processed: 0,
+            matched: 0,
+            manualNeeded: 0,
+            noStats: 0,
+            errors: 0,
+            totalPlayers: totalPlayers
+        };
         
-        for (let i = 0; i < unprocessed.length; i++) {
-            const player = unprocessed[i];
-            
-            console.log(`\n📋 [${i + 1}/${unprocessed.length}] Processing player: ${player.player_name} (${player.team_name})`);
-            console.log(`   Total minutes: ${player.total_minutes}, Rounds played: ${player.rounds_played}`);
-            
-            try {
-                // Check if player has any minutes
-                if (!player.has_played) {
-                    console.log(`   ⚠️ Player has no minutes - moving to manual matching`);
-                    
-                    await connection.execute(
-                        `INSERT INTO matching_names.manual_matching_players 
-                         (player_name, team_name, reason, total_minutes, rounds_available)
-                         VALUES (?, ?, 'no_stats', ?, ?)`,
-                        [player.player_name, player.team_name, player.total_minutes, player.rounds_played]
-                    );
-                    
-                    await connection.execute(
-                        `UPDATE matching_names.unprocessed_score365_players 
-                         SET status = 'manual_needed' WHERE id = ?`,
-                        [player.id]
-                    );
-                    
-                    noStats++;
-                    results.push({ player: player.player_name, status: 'no_stats' });
-                    continue;
-                }
-                
-                // Check if player has enough data
-                if (!hasEnoughData(player)) {
-                    console.log(`   ⚠️ Player has only ${player.rounds_played} rounds with minutes - need at least ${MIN_ROUNDS_TO_MATCH}`);
-                    
-                    await connection.execute(
-                        `INSERT INTO matching_names.manual_matching_players 
-                         (player_name, team_name, reason, total_minutes, rounds_available)
-                         VALUES (?, ?, 'insufficient_rounds', ?, ?)`,
-                        [player.player_name, player.team_name, player.total_minutes, player.rounds_played]
-                    );
-                    
-                    await connection.execute(
-                        `UPDATE matching_names.unprocessed_score365_players 
-                         SET status = 'manual_needed' WHERE id = ?`,
-                        [player.id]
-                    );
-                    
-                    manualNeeded++;
-                    results.push({ player: player.player_name, status: 'insufficient_data' });
-                    continue;
-                }
-                
-                // Find matches
-                const matches = await findMatches(player, byTeam, logger);
-                
-                if (matches.length === 0) {
-                    console.log(`   ❌ No matches found`);
-                    
-                    await connection.execute(
-                        `INSERT INTO matching_names.manual_matching_players 
-                         (player_name, team_name, reason, total_minutes, rounds_available, potential_matches)
-                         VALUES (?, ?, 'no_match_found', ?, ?, ?)`,
-                        [player.player_name, player.team_name, player.total_minutes, player.rounds_played, JSON.stringify(matches.slice(0, 3))]
-                    );
-                    
-                    await connection.execute(
-                        `UPDATE matching_names.unprocessed_score365_players 
-                         SET status = 'manual_needed' WHERE id = ?`,
-                        [player.id]
-                    );
-                    
-                    manualNeeded++;
-                    results.push({ player: player.player_name, status: 'no_match' });
-                    
-                } else if (matches.length === 1) {
-                    // Perfect match
-                    const match = matches[0];
-                    console.log(`   ✅ MATCHED with ${match.rsl_name} (confidence: ${(match.confidence * 100).toFixed(1)}%)`);
-                    console.log(`      Rounds compared: ${match.rounds_compared}, Matches: ${match.matches}/${match.total_compared}`);
-                    
-                    await connection.execute(
-                        `INSERT INTO matching_names.matched_players 
-                         (score365_name, score365_team, rsl_name, rsl_player_id, rsl_team_id, 
-                          confidence_score, rounds_matched, rounds_compared, match_method)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'auto')`,
-                        [
-                            player.player_name, player.team_name, 
-                            match.rsl_name, match.rsl_id, match.rsl_team_id,
-                            match.confidence, match.matches, match.total_compared
-                        ]
-                    );
-                    
-                    await connection.execute(
-                        `UPDATE matching_names.unprocessed_score365_players 
-                         SET status = 'matched' WHERE id = ?`,
-                        [player.id]
-                    );
-                    
-                    matched++;
-                    results.push({ player: player.player_name, status: 'matched', rsl_id: match.rsl_id });
-                    
-                } else {
-                    // Multiple matches - need manual review
-                    console.log(`   ⚠️ Multiple matches found (${matches.length}) - needs manual review`);
-                    matches.slice(0, 3).forEach((m, idx) => {
-                        console.log(`      ${idx + 1}. ${m.rsl_name} (${(m.confidence * 100).toFixed(1)}%)`);
-                    });
-                    
-                    await connection.execute(
-                        `INSERT INTO matching_names.manual_matching_players 
-                         (player_name, team_name, reason, total_minutes, rounds_available, potential_matches)
-                         VALUES (?, ?, 'ambiguous_match', ?, ?, ?)`,
-                        [
-                            player.player_name, player.team_name, 
-                            player.total_minutes, player.rounds_played,
-                            JSON.stringify(matches.slice(0, 5))
-                        ]
-                    );
-                    
-                    await connection.execute(
-                        `UPDATE matching_names.unprocessed_score365_players 
-                         SET status = 'manual_needed' WHERE id = ?`,
-                        [player.id]
-                    );
-                    
-                    manualNeeded++;
-                    results.push({ player: player.player_name, status: 'ambiguous' });
-                }
-                
-            } catch (error) {
-                logger.error(`   ❌ Error processing player ${player.player_name}:`, error.message);
-                errors++;
-                
-                await connection.execute(
-                    `INSERT INTO matching_names.directory_errors_ids (id, error_message)
-                     VALUES (?, ?)`,
-                    [player.id, error.message.substring(0, 500)]
-                );
-            }
-            
-            // Log progress
-            if ((i + 1) % BATCH_SIZE === 0) {
-                console.log(`\n📊 Progress: ${i + 1}/${unprocessed.length} players processed`);
-                console.log(`   ✅ Matched: ${matched}, ⚠️ Manual: ${manualNeeded}, ❌ Errors: ${errors}`);
-            }
+        // Process outfield players first
+        if (outfieldPlayers.length > 0) {
+            console.log(`\n📦 Processing ${outfieldPlayers.length} outfield players...`);
+            await processPlayerBatch(outfieldPlayers, 'outfield', rslOutfield.byTeam, connection, logger, stats);
+        }
+        
+        // Then process goalkeepers
+        if (gkPlayers.length > 0) {
+            console.log(`\n📦 Processing ${gkPlayers.length} goalkeepers...`);
+            await processPlayerBatch(gkPlayers, 'gk', rslGks.byTeam, connection, logger, stats);
         }
         
         // =========================================================
@@ -445,42 +626,21 @@ export default async function runPlayerMatching(runId, testMode = true) {
         console.log('\n' + '='.repeat(60));
         console.log('📊 MATCHING COMPLETE');
         console.log('='.repeat(60));
-        console.log(`   Total players processed: ${unprocessed.length}`);
-        console.log(`   ✅ Successfully matched: ${matched}`);
-        console.log(`   ⚠️ Manual review needed: ${manualNeeded}`);
-        console.log(`   📊 No stats (0 minutes): ${noStats}`);
-        console.log(`   ❌ Errors: ${errors}`);
+        console.log(`   Total players processed: ${totalPlayers}`);
+        console.log(`   ✅ Successfully matched: ${stats.matched}`);
+        console.log(`   ⚠️ Manual review needed: ${stats.manualNeeded}`);
+        console.log(`   📊 No stats (0 minutes): ${stats.noStats}`);
+        console.log(`   ❌ Errors: ${stats.errors}`);
         
-        if (manualNeeded > 0) {
-            console.log('\n⚠️ Players needing manual review:');
-            const manualResults = results.filter(r => 
-                r.status === 'insufficient_data' || 
-                r.status === 'no_match' || 
-                r.status === 'ambiguous' ||
-                r.status === 'no_stats'
-            ).slice(0, 10);
-            
-            manualResults.forEach(r => {
-                let reason = '';
-                if (r.status === 'no_stats') reason = 'no minutes';
-                else if (r.status === 'insufficient_data') reason = 'insufficient rounds';
-                else if (r.status === 'no_match') reason = 'no match found';
-                else if (r.status === 'ambiguous') reason = 'multiple matches';
-                console.log(`   - ${r.player}: ${reason}`);
-            });
-            
-            if (manualResults.length < manualNeeded) {
-                console.log(`   ... and ${manualNeeded - manualResults.length} more`);
-            }
-            
-            console.log('\n   👤 Check manual_matching_players table');
-        }
-        
-        // Check remaining queue
-        const [remaining] = await connection.execute(
-            'SELECT COUNT(*) as count FROM matching_names.unprocessed_score365_players WHERE status = "pending"'
+        // Check remaining queues
+        const [remainingOutfield] = await connection.execute(
+            'SELECT COUNT(*) as count FROM matching_names.unprocessed_outfield_players WHERE status = "pending"'
         );
-        console.log(`\n   📋 Remaining in queue: ${remaining[0].count}`);
+        const [remainingGks] = await connection.execute(
+            'SELECT COUNT(*) as count FROM matching_names.unprocessed_gk_players WHERE status = "pending"'
+        );
+        
+        console.log(`\n   📋 Remaining in queue: ${remainingOutfield[0].count} outfield, ${remainingGks[0].count} GKs`);
         
         // Update sync log
         await connection.execute(
@@ -490,8 +650,8 @@ export default async function runPlayerMatching(runId, testMode = true) {
                  completed_at = NOW()
              WHERE run_id = ?`,
             [
-                errors === 0 ? 'completed' : 'completed_with_errors',
-                unprocessed.length, matched, manualNeeded, noStats, errors,
+                stats.errors === 0 ? 'completed' : 'completed_with_errors',
+                totalPlayers, stats.matched, stats.manualNeeded, stats.noStats, stats.errors,
                 runId
             ]
         );
@@ -500,12 +660,12 @@ export default async function runPlayerMatching(runId, testMode = true) {
         console.log('='.repeat(60));
         
         return {
-            success: errors === 0,
-            processed: unprocessed.length,
-            matched,
-            manualNeeded,
-            noStats,
-            errors
+            success: stats.errors === 0,
+            processed: totalPlayers,
+            matched: stats.matched,
+            manualNeeded: stats.manualNeeded,
+            noStats: stats.noStats,
+            errors: stats.errors
         };
         
     } catch (error) {
@@ -532,7 +692,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const runId = `match-players-${Date.now()}`;
     
     // Parse command line argument for test mode
-    // Usage: node match-players.js [test|full]
     const mode = process.argv[2] || 'test';
     const testMode = mode === 'test';
     
