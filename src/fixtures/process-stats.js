@@ -1,10 +1,10 @@
 // src/fixtures/process-stats.js
-// Processes unprocessed fixtures to extract player, goalkeeper, and team stats
-// Saves stats to score365_* tables in stats database
-// Updates match_processing_status at each stage
-// Moves processed fixtures to processed_fixtures table
-// When a game fails, it's SKIPPED (kept in unprocessed) and moves to next game
-// Failed games are reported at the end for a separate retry run
+// FINAL VERSION - Includes all required stats:
+// - Minutes played (actual minutes)
+// - Yellow/red cards (with second yellow logic)
+// - xG, npxG, xA
+// - Penalties scored/missed (for all players including GKs)
+// - All team stats
 
 import dbClient from '../database/tidb-client.js';
 
@@ -14,13 +14,11 @@ const HEADERS = {
     'Accept': 'application/json'
 };
 
-// Helper function to get stat value from player stats array
 function getStatValue(player, statType, defaultValue = 0) {
     if (!player || !player.stats) return defaultValue;
     
     const stat = player.stats.find(s => s && s.type === statType);
     if (stat && typeof stat.value !== 'undefined') {
-        // Handle special case for penalties saved (format: "1/2")
         if (statType === 44) {
             const parts = String(stat.value).split('/');
             return {
@@ -33,7 +31,6 @@ function getStatValue(player, statType, defaultValue = 0) {
     return defaultValue;
 }
 
-// Helper function to get penalties scored from goals stat
 function getPenaltiesScored(player) {
     if (!player || !player.stats) return 0;
     
@@ -45,55 +42,35 @@ function getPenaltiesScored(player) {
     return 0;
 }
 
-// Helper function to count yellow cards for a player from game events
 function getYellowCardsFromEvents(playerId, gameEvents) {
     if (!gameEvents || !Array.isArray(gameEvents)) return 0;
     
-    // Count all regular yellow card events (type 2)
     const regularYellows = gameEvents.filter(event => 
         event.playerId === playerId && 
         event.eventType && 
         event.eventType.id === 2
     ).length;
     
-    // Check for red cards that are from second yellows (subTypeId 21)
     const secondYellowReds = gameEvents.filter(event => 
         event.playerId === playerId && 
         event.eventType && 
         event.eventType.id === 3 &&
-        event.eventType.subTypeId === 21 // Second Yellow Card
+        event.eventType.subTypeId === 21
     ).length;
     
-    // For each second yellow red, we need to add an extra yellow
-    // (because the first yellow was already counted, and this represents the second)
-    const totalYellows = regularYellows + secondYellowReds;
-    
-    if (totalYellows > 0) {
-        console.log(`      🔍 Player ${playerId}: ${regularYellows} regular yellows + ${secondYellowReds} second yellows = ${totalYellows} total yellows`);
-    }
-    
-    return totalYellows;
+    return regularYellows + secondYellowReds;
 }
 
-// Helper function to count red cards for a player from game events
 function getRedCardsFromEvents(playerId, gameEvents) {
     if (!gameEvents || !Array.isArray(gameEvents)) return 0;
     
-    // Count ALL red card events (type 3) regardless of subtype
-    const reds = gameEvents.filter(event => 
+    return gameEvents.filter(event => 
         event.playerId === playerId && 
         event.eventType && 
         event.eventType.id === 3
     ).length;
-    
-    if (reds > 0) {
-        console.log(`      🔍 Player ${playerId} has ${reds} red events`);
-    }
-    
-    return reds;
 }
 
-// Fetch detailed game data from 365scores
 async function fetchGameDetails(gameId) {
     console.log(`   📥 Fetching details for game ID: ${gameId}`);
     
@@ -107,15 +84,12 @@ async function fetchGameDetails(gameId) {
     const data = await response.json();
     
     if (!data?.game) {
-        console.error(`   ❌ No game data in response for game ${gameId}`);
-        console.error(`   Response keys:`, Object.keys(data));
         throw new Error('No game data in response');
     }
     
     return data.game;
 }
 
-// Process a single game and save stats
 async function processGame(game, connection) {
     const fixtureId = game.fixture_id;
     const roundNum = game.round_num;
@@ -124,16 +98,13 @@ async function processGame(game, connection) {
     
     console.log(`\n   🎮 Processing: ${homeTeam} vs ${awayTeam} (Round ${roundNum})`);
     
-    // Update status to processing
     await connection.execute(
         `UPDATE match_processing_status 
-         SET overall_status = 'processing', 
-             updated_at = CURRENT_TIMESTAMP 
+         SET overall_status = 'processing', updated_at = CURRENT_TIMESTAMP 
          WHERE fixture_id = ?`,
         [fixtureId]
     );
     
-    // STAGE 1: Fetch game details
     console.log(`   ⏳ Stage 1: Fetching game details...`);
     await connection.execute(
         `UPDATE match_processing_status 
@@ -155,7 +126,6 @@ async function processGame(game, connection) {
         console.log(`   ✅ Stage 1: Game details fetched successfully`);
         
     } catch (fetchError) {
-        // Mark as failed but KEEP in unprocessed_fixtures
         await connection.execute(
             `UPDATE match_processing_status 
              SET fetch_status = 'failed', fetch_error = ?,
@@ -163,12 +133,9 @@ async function processGame(game, connection) {
              WHERE fixture_id = ?`,
             [fetchError.message.substring(0, 500), fixtureId]
         );
-        console.error(`   ❌ Stage 1 failed: ${fetchError.message}`);
-        console.log(`   ⏩ Moving to next game (keeping in queue for retry later)`);
-        throw fetchError; // Re-throw to be caught by main loop
+        throw fetchError;
     }
     
-    // STAGE 2: Process stats
     console.log(`   ⏳ Stage 2: Processing player and team stats...`);
     await connection.execute(
         `UPDATE match_processing_status 
@@ -178,27 +145,21 @@ async function processGame(game, connection) {
     );
     
     try {
-        // Extract data from gameData
         const { homeCompetitor, awayCompetitor, members, chartEvents, events } = gameData;
         
-        // Validate required data
         if (!homeCompetitor || !awayCompetitor) {
             throw new Error('Missing home or away competitor data');
         }
         
-        // Maps for team stats
         const matchTeamStats = {
             home: { xg: 0, npxg: 0, penalties_scored: 0, penalties_missed: 0 },
             away: { xg: 0, npxg: 0, penalties_scored: 0, penalties_missed: 0 }
         };
         
-        // Track penalties for xG calculation
         const gamePenaltyXgMap = new Map();
         const gamePenaltyMissedMap = new Map();
         
-        // Process penalty events
         if (chartEvents?.events && Array.isArray(chartEvents.events)) {
-            console.log(`      📊 Processing ${chartEvents.events.length} chart events for xG`);
             chartEvents.events.filter(e => e && e.subType === 9).forEach(event => {
                 const playerId = String(event.playerId || '');
                 gamePenaltyXgMap.set(playerId, (gamePenaltyXgMap.get(playerId) || 0) + (parseFloat(event.xg) || 0));
@@ -208,7 +169,6 @@ async function processGame(game, connection) {
             });
         }
         
-        // Create member name map
         const memberNameMap = new Map();
         if (members && Array.isArray(members)) {
             members.forEach(m => {
@@ -218,38 +178,32 @@ async function processGame(game, connection) {
             });
         }
         
-        // Process players and goalkeepers
         const processPlayerList = async (playerList, teamName, venue, opponentName) => {
-            if (!playerList || !Array.isArray(playerList)) {
-                console.log(`   ⚠️ No player list for ${teamName}`);
-                return;
-            }
-            
-            console.log(`      👥 Processing ${playerList.length} players for ${teamName}`);
+            if (!playerList || !Array.isArray(playerList)) return;
             
             for (const player of playerList) {
                 if (!player) continue;
                 
-                // Skip if minutes played = 0
-                const minutesStat = player.stats?.find(s => s && s.type === 30);
-                if (minutesStat && parseInt(minutesStat.value || 0, 10) === 0) continue;
+                // Get actual minutes played (type 30)
+                const minutes = getStatValue(player, 30);
+                if (minutes === 0) continue;
                 
                 const playerName = memberNameMap.get(player.id) || player.name || 'Unknown Player';
                 const playerIdStr = String(player.id || '');
                 const shirtNumber = player.shirtNum || null;
                 
-                // Get yellow and red cards from events (UPDATED LOGIC)
                 const yellowCards = getYellowCardsFromEvents(player.id, events);
                 const redCards = getRedCardsFromEvents(player.id, events);
                 
-                // Get other stats
                 const xg = getStatValue(player, 76);
                 const goals = getStatValue(player, 27);
                 const assists = getStatValue(player, 26);
                 const xa = getStatValue(player, 78);
-                const minutes = getStatValue(player, 30);
                 const cleanSheets = getStatValue(player, 35);
                 const saves = getStatValue(player, 23);
+                
+                // ALL PLAYERS (including GKs) can score penalties
+                const penaltiesScored = getPenaltiesScored(player);
                 
                 if (player.position?.id === 1) { // Goalkeeper
                     const pensData = getStatValue(player, 44);
@@ -262,6 +216,7 @@ async function processGame(game, connection) {
                         game_id: fixtureId,
                         venue: venue,
                         mp: 1,
+                        minutes_played: minutes,
                         clean_sheets: cleanSheets === 0 ? 1 : 0,
                         saves: saves,
                         yellow_cards: yellowCards,
@@ -269,22 +224,23 @@ async function processGame(game, connection) {
                         xg_prevented: getStatValue(player, 83),
                         penalties_saved: (pensData && pensData.saved) || 0,
                         penalties_faced: (pensData && pensData.faced) || 0,
+                        penalties_scored: penaltiesScored, // ADDED for GK
                         game_timestamp: gameData.startTime
                     };
                     
-                    console.log(`      🧤 GK ${playerName}: MP=${minutes}, CS=${gkStats.clean_sheets}, Saves=${saves}, YC=${yellowCards}, RC=${redCards}`);
+                    console.log(`      🧤 GK ${playerName}: MIN=${minutes}, CS=${gkStats.clean_sheets}, Saves=${saves}, YC=${yellowCards}, RC=${redCards}, PS=${penaltiesScored}`);
                     
-                    // Insert or update goalkeeper stats
                     await connection.execute(
                         `INSERT INTO stats.score365_goalkeepers 
                          (player_name, team_name, shirt_number, round_num, game_id, venue,
-                          mp, clean_sheets, saves, yellow_cards, red_cards, xg_prevented, 
-                          penalties_saved, penalties_faced, game_timestamp)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          mp, minutes_played, clean_sheets, saves, yellow_cards, red_cards, xg_prevented, 
+                          penalties_saved, penalties_faced, penalties_scored, game_timestamp)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE
                             team_name = VALUES(team_name),
                             shirt_number = VALUES(shirt_number),
                             mp = VALUES(mp),
+                            minutes_played = VALUES(minutes_played),
                             clean_sheets = VALUES(clean_sheets),
                             saves = VALUES(saves),
                             yellow_cards = VALUES(yellow_cards),
@@ -292,13 +248,15 @@ async function processGame(game, connection) {
                             xg_prevented = VALUES(xg_prevented),
                             penalties_saved = VALUES(penalties_saved),
                             penalties_faced = VALUES(penalties_faced),
+                            penalties_scored = VALUES(penalties_scored),
                             game_timestamp = VALUES(game_timestamp)`,
                         [
                             gkStats.player_name, gkStats.team_name, gkStats.shirt_number,
                             gkStats.round_num, gkStats.game_id, gkStats.venue,
-                            gkStats.mp, gkStats.clean_sheets, gkStats.saves,
+                            gkStats.mp, gkStats.minutes_played, gkStats.clean_sheets, gkStats.saves,
                             gkStats.yellow_cards, gkStats.red_cards,
                             gkStats.xg_prevented, gkStats.penalties_saved, gkStats.penalties_faced,
+                            gkStats.penalties_scored,
                             gkStats.game_timestamp
                         ]
                     );
@@ -314,6 +272,7 @@ async function processGame(game, connection) {
                         game_id: fixtureId,
                         venue: venue,
                         mp: 1,
+                        minutes_played: minutes,
                         goals: goals,
                         yellow_cards: yellowCards,
                         red_cards: redCards,
@@ -321,24 +280,24 @@ async function processGame(game, connection) {
                         npxg: Math.max(0, xg - penaltyXg),
                         assists: assists,
                         xa: xa,
-                        penalties_scored: getPenaltiesScored(player),
+                        penalties_scored: penaltiesScored,
                         penalties_missed: gamePenaltyMissedMap.get(playerIdStr) || 0,
                         game_timestamp: gameData.startTime
                     };
                     
-                    console.log(`      👤 ${playerName}: G=${goals}, A=${assists}, xG=${xg.toFixed(2)}, xA=${xa.toFixed(2)}, YC=${yellowCards}, RC=${redCards}`);
+                    console.log(`      👤 ${playerName}: MIN=${minutes}, G=${goals}, A=${assists}, xG=${xg.toFixed(2)}, xA=${xa.toFixed(2)}, YC=${yellowCards}, RC=${redCards}, PS=${penaltiesScored}`);
                     
-                    // Insert or update player stats
                     await connection.execute(
                         `INSERT INTO stats.score365_players 
                          (player_name, team_name, shirt_number, round_num, game_id, venue,
-                          mp, goals, yellow_cards, red_cards, xg, npxg, assists, xa, 
+                          mp, minutes_played, goals, yellow_cards, red_cards, xg, npxg, assists, xa, 
                           penalties_scored, penalties_missed, game_timestamp)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE
                             team_name = VALUES(team_name),
                             shirt_number = VALUES(shirt_number),
                             mp = VALUES(mp),
+                            minutes_played = VALUES(minutes_played),
                             goals = VALUES(goals),
                             yellow_cards = VALUES(yellow_cards),
                             red_cards = VALUES(red_cards),
@@ -352,7 +311,7 @@ async function processGame(game, connection) {
                         [
                             playerStats.player_name, playerStats.team_name, playerStats.shirt_number,
                             playerStats.round_num, playerStats.game_id, playerStats.venue,
-                            playerStats.mp, playerStats.goals, 
+                            playerStats.mp, playerStats.minutes_played, playerStats.goals, 
                             playerStats.yellow_cards, playerStats.red_cards,
                             playerStats.xg, playerStats.npxg,
                             playerStats.assists, playerStats.xa,
@@ -361,7 +320,6 @@ async function processGame(game, connection) {
                         ]
                     );
                     
-                    // Update team stats aggregates
                     matchTeamStats[venue].xg += playerStats.xg || 0;
                     matchTeamStats[venue].npxg += playerStats.npxg || 0;
                     matchTeamStats[venue].penalties_scored += playerStats.penalties_scored || 0;
@@ -370,7 +328,6 @@ async function processGame(game, connection) {
             }
         };
         
-        // Process home team players
         await processPlayerList(
             homeCompetitor?.lineups?.members || [],
             homeCompetitor.name || 'Unknown',
@@ -378,7 +335,6 @@ async function processGame(game, connection) {
             awayCompetitor.name || 'Unknown'
         );
         
-        // Process away team players
         await processPlayerList(
             awayCompetitor?.lineups?.members || [],
             awayCompetitor.name || 'Unknown',
@@ -386,14 +342,12 @@ async function processGame(game, connection) {
             homeCompetitor.name || 'Unknown'
         );
         
-        // Process team stats
         const processTeam = async (team, venue, teamStats, opponentScore) => {
             if (!team || !team.name) return;
             
             const teamName = team.name;
             const teamScore = team.score || 0;
             
-            // Calculate non-penalty scores
             const teamNpScore = teamScore - (teamStats.penalties_scored || 0);
             const opponentNpScore = opponentScore - (venue === 'home' ? (matchTeamStats.away.penalties_scored || 0) : (matchTeamStats.home.penalties_scored || 0));
             
@@ -416,8 +370,6 @@ async function processGame(game, connection) {
                 npscore_str: venue === 'home' ? `${teamNpScore}-${opponentNpScore}` : `${opponentNpScore}-${teamNpScore}`,
                 game_timestamp: gameData.startTime
             };
-            
-            console.log(`      🏆 Team ${teamName}: GF=${teamScore}, GA=${opponentScore}, xG=${teamStats.xg.toFixed(2)}`);
             
             await connection.execute(
                 `INSERT INTO stats.score365_teams 
@@ -456,16 +408,13 @@ async function processGame(game, connection) {
         await processTeam(homeCompetitor, 'home', matchTeamStats.home, awayCompetitor.score || 0);
         await processTeam(awayCompetitor, 'away', matchTeamStats.away, homeCompetitor.score || 0);
         
-        // Update process status to success
         await connection.execute(
             `UPDATE match_processing_status 
              SET process_status = 'success', process_completed_at = NOW()
              WHERE fixture_id = ?`,
             [fixtureId]
         );
-        console.log(`   ✅ Stage 2: Stats processed successfully`);
         
-        // STAGE 3: Update save status
         await connection.execute(
             `UPDATE match_processing_status 
              SET save_players_status = 'success',
@@ -477,7 +426,6 @@ async function processGame(game, connection) {
             [fixtureId]
         );
         
-        // Move to processed_fixtures (ONLY on success)
         await connection.execute(
             `INSERT INTO processed_fixtures (fixture_id, round_num, processed_at)
              SELECT fixture_id, round_num, NOW()
@@ -494,7 +442,6 @@ async function processGame(game, connection) {
         console.log(`   ✅ Game fully processed and moved to processed_fixtures`);
         
     } catch (processError) {
-        // Mark as failed but KEEP in unprocessed_fixtures
         await connection.execute(
             `UPDATE match_processing_status 
              SET process_status = 'failed', process_error = ?,
@@ -502,13 +449,10 @@ async function processGame(game, connection) {
              WHERE fixture_id = ?`,
             [processError.message.substring(0, 500), fixtureId]
         );
-        console.error(`   ❌ Stage 2 failed: ${processError.message}`);
-        console.log(`   ⏩ Moving to next game (keeping in queue for retry later)`);
-        throw processError; // Re-throw to be caught by main loop
+        throw processError;
     }
 }
 
-// Main function to process ALL unprocessed fixtures
 export default async function runStatsProcessing(runId, connection) {
     console.log('\n' + '='.repeat(60));
     console.log('🏁 STARTING STATS PROCESSING (Batch Mode)');
@@ -519,10 +463,10 @@ export default async function runStatsProcessing(runId, connection) {
     
     let totalProcessed = 0;
     let totalFailed = 0;
-    let failedGames = []; // Track failed game IDs
+    let failedGames = [];
+    const processedIds = new Set();
     
     try {
-        // Check initial queue size
         const [countResult] = await connection.execute(
             'SELECT COUNT(*) as count FROM unprocessed_fixtures'
         );
@@ -534,7 +478,6 @@ export default async function runStatsProcessing(runId, connection) {
             return { success: true, processed: 0, failed: 0 };
         }
         
-        // Process games in a loop until queue is empty
         let gamesInQueue = initialQueueSize;
         let loopCount = 0;
         
@@ -544,7 +487,6 @@ export default async function runStatsProcessing(runId, connection) {
             console.log(`🔄 Processing cycle #${loopCount} (${gamesInQueue} games remaining)`);
             console.log(`${'-'.repeat(50)}`);
             
-            // SIMPLIFIED: Get the oldest game from unprocessed_fixtures regardless of status
             const [fixtures] = await connection.execute(
                 `SELECT * 
                  FROM unprocessed_fixtures 
@@ -552,10 +494,7 @@ export default async function runStatsProcessing(runId, connection) {
                  LIMIT 1`
             );
             
-            if (fixtures.length === 0) {
-                console.log('📭 No more unprocessed fixtures found - breaking loop');
-                break;
-            }
+            if (fixtures.length === 0) break;
             
             const fixture = fixtures[0];
             console.log(`\n📋 Processing fixture ID: ${fixture.fixture_id}`);
@@ -564,20 +503,23 @@ export default async function runStatsProcessing(runId, connection) {
             try {
                 await processGame(fixture, connection);
                 totalProcessed++;
+                processedIds.add(fixture.fixture_id);
                 console.log(`   ✅ Game #${totalProcessed + totalFailed} completed successfully`);
             } catch (error) {
                 console.error(`   ❌ Game #${totalProcessed + totalFailed + 1} failed:`, error.message);
                 totalFailed++;
-                failedGames.push({
-                    id: fixture.fixture_id,
-                    round: fixture.round_num,
-                    home: fixture.home_team,
-                    away: fixture.away_team
-                });
-                // Continue to next game - failed game stays in unprocessed_fixtures
+                
+                if (!processedIds.has(fixture.fixture_id)) {
+                    failedGames.push({
+                        id: fixture.fixture_id,
+                        round: fixture.round_num,
+                        home: fixture.home_team,
+                        away: fixture.away_team
+                    });
+                    processedIds.add(fixture.fixture_id);
+                }
             }
             
-            // Update remaining queue count
             const [newCount] = await connection.execute(
                 'SELECT COUNT(*) as count FROM unprocessed_fixtures'
             );
@@ -597,9 +539,12 @@ export default async function runStatsProcessing(runId, connection) {
             console.log('\n' + '-'.repeat(60));
             console.log('❌ FAILED GAMES (need retry):');
             console.log('-'.repeat(60));
-            failedGames.forEach((game, index) => {
+            
+            const uniqueFailed = [...new Map(failedGames.map(game => [game.id, game])).values()];
+            uniqueFailed.forEach((game, index) => {
                 console.log(`   ${index + 1}. Game ${game.id}: ${game.home} vs ${game.away} (Round ${game.round})`);
             });
+            
             console.log('\n   ⚠️  Run the workflow again to retry these failed games.');
         } else {
             console.log('\n   ✅ All games processed successfully!');
@@ -610,7 +555,7 @@ export default async function runStatsProcessing(runId, connection) {
             success: totalFailed === 0,
             processed: totalProcessed,
             failed: totalFailed,
-            failedGames: failedGames
+            failedGames: [...new Map(failedGames.map(game => [game.id, game])).values()]
         };
         
     } catch (error) {
@@ -621,11 +566,9 @@ export default async function runStatsProcessing(runId, connection) {
     }
 }
 
-// If running directly
 if (import.meta.url === `file://${process.argv[1]}`) {
     const runId = `process-${Date.now()}`;
     
-    // Initialize connection and run
     const run = async () => {
         let connection = null;
         try {
