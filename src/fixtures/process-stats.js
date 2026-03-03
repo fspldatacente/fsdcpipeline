@@ -45,6 +45,28 @@ function getPenaltiesScored(player) {
     return 0;
 }
 
+// NEW: Helper function to count yellow cards for a player from game events
+function getYellowCardsFromEvents(playerId, gameEvents) {
+    if (!gameEvents || !Array.isArray(gameEvents)) return 0;
+    
+    return gameEvents.filter(event => 
+        event.playerId === playerId && 
+        event.eventType && 
+        event.eventType.id === 2
+    ).length;
+}
+
+// NEW: Helper function to count red cards for a player from game events
+function getRedCardsFromEvents(playerId, gameEvents) {
+    if (!gameEvents || !Array.isArray(gameEvents)) return 0;
+    
+    return gameEvents.filter(event => 
+        event.playerId === playerId && 
+        event.eventType && 
+        event.eventType.id === 3
+    ).length;
+}
+
 // Fetch detailed game data from 365scores
 async function fetchGameDetails(gameId) {
     console.log(`   📥 Fetching details for game ID: ${gameId}`);
@@ -131,7 +153,7 @@ async function processGame(game, connection) {
     
     try {
         // Extract data from gameData
-        const { homeCompetitor, awayCompetitor, members, chartEvents } = gameData;
+        const { homeCompetitor, awayCompetitor, members, chartEvents, events } = gameData;
         
         // Validate required data
         if (!homeCompetitor || !awayCompetitor) {
@@ -187,6 +209,14 @@ async function processGame(game, connection) {
                 const playerIdStr = String(player.id || '');
                 const shirtNumber = player.shirtNum || null;
                 
+                // Get yellow and red cards from events
+                const yellowCards = getYellowCardsFromEvents(player.id, events);
+                const redCards = getRedCardsFromEvents(player.id, events);
+                
+                if (yellowCards > 0 || redCards > 0) {
+                    console.log(`      🟨🟥 Player ${playerName}: YC=${yellowCards}, RC=${redCards}`);
+                }
+                
                 if (player.position?.id === 1) { // Goalkeeper
                     const pensData = getStatValue(player, 44);
                     
@@ -200,6 +230,8 @@ async function processGame(game, connection) {
                         mp: 1,
                         clean_sheets: getStatValue(player, 35) === 0 ? 1 : 0,
                         saves: getStatValue(player, 23),
+                        yellow_cards: yellowCards,
+                        red_cards: redCards,
                         xg_prevented: getStatValue(player, 83),
                         penalties_saved: (pensData && pensData.saved) || 0,
                         penalties_faced: (pensData && pensData.faced) || 0,
@@ -210,14 +242,17 @@ async function processGame(game, connection) {
                     await connection.execute(
                         `INSERT INTO stats.score365_goalkeepers 
                          (player_name, team_name, shirt_number, round_num, game_id, venue,
-                          mp, clean_sheets, saves, xg_prevented, penalties_saved, penalties_faced, game_timestamp)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          mp, clean_sheets, saves, yellow_cards, red_cards, xg_prevented, 
+                          penalties_saved, penalties_faced, game_timestamp)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE
                             team_name = VALUES(team_name),
                             shirt_number = VALUES(shirt_number),
                             mp = VALUES(mp),
                             clean_sheets = VALUES(clean_sheets),
                             saves = VALUES(saves),
+                            yellow_cards = VALUES(yellow_cards),
+                            red_cards = VALUES(red_cards),
                             xg_prevented = VALUES(xg_prevented),
                             penalties_saved = VALUES(penalties_saved),
                             penalties_faced = VALUES(penalties_faced),
@@ -226,6 +261,7 @@ async function processGame(game, connection) {
                             gkStats.player_name, gkStats.team_name, gkStats.shirt_number,
                             gkStats.round_num, gkStats.game_id, gkStats.venue,
                             gkStats.mp, gkStats.clean_sheets, gkStats.saves,
+                            gkStats.yellow_cards, gkStats.red_cards,
                             gkStats.xg_prevented, gkStats.penalties_saved, gkStats.penalties_faced,
                             gkStats.game_timestamp
                         ]
@@ -244,6 +280,8 @@ async function processGame(game, connection) {
                         venue: venue,
                         mp: 1,
                         goals: getStatValue(player, 27),
+                        yellow_cards: yellowCards,
+                        red_cards: redCards,
                         xg: xg,
                         npxg: Math.max(0, xg - penaltyXg),
                         assists: getStatValue(player, 26),
@@ -257,13 +295,16 @@ async function processGame(game, connection) {
                     await connection.execute(
                         `INSERT INTO stats.score365_players 
                          (player_name, team_name, shirt_number, round_num, game_id, venue,
-                          mp, goals, xg, npxg, assists, xa, penalties_scored, penalties_missed, game_timestamp)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                          mp, goals, yellow_cards, red_cards, xg, npxg, assists, xa, 
+                          penalties_scored, penalties_missed, game_timestamp)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE
                             team_name = VALUES(team_name),
                             shirt_number = VALUES(shirt_number),
                             mp = VALUES(mp),
                             goals = VALUES(goals),
+                            yellow_cards = VALUES(yellow_cards),
+                            red_cards = VALUES(red_cards),
                             xg = VALUES(xg),
                             npxg = VALUES(npxg),
                             assists = VALUES(assists),
@@ -274,7 +315,9 @@ async function processGame(game, connection) {
                         [
                             playerStats.player_name, playerStats.team_name, playerStats.shirt_number,
                             playerStats.round_num, playerStats.game_id, playerStats.venue,
-                            playerStats.mp, playerStats.goals, playerStats.xg, playerStats.npxg,
+                            playerStats.mp, playerStats.goals, 
+                            playerStats.yellow_cards, playerStats.red_cards,
+                            playerStats.xg, playerStats.npxg,
                             playerStats.assists, playerStats.xa,
                             playerStats.penalties_scored, playerStats.penalties_missed,
                             playerStats.game_timestamp
