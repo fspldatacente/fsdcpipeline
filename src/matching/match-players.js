@@ -444,10 +444,13 @@ async function processPlayerBatch(players, playerType, rslData, connection, logg
             logger.error(`   ❌ Error processing ${playerType} ${player.player_name}:`, error.message);
             stats.errors++;
             
-            // Use INSERT IGNORE to avoid duplicate key errors
+            // FIXED: Using ON DUPLICATE KEY UPDATE to handle duplicate entries
             await connection.execute(
-                `INSERT IGNORE INTO matching_names.directory_errors_ids (id, error_message, retry_count)
-                 VALUES (?, ?, 1)`,
+                `INSERT INTO matching_names.directory_errors_ids (id, error_message, retry_count)
+                 VALUES (?, ?, 1)
+                 ON DUPLICATE KEY UPDATE
+                    error_message = VALUES(error_message),
+                    retry_count = retry_count + 1`,
                 [player.id, error.message.substring(0, 500)]
             );
         }
