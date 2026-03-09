@@ -1,12 +1,13 @@
 // src/matching/match-players.js
 // Matches score365 players to RSL players by comparing stats
-// Handles both outfield players and goalkeepers separately
-// Progressive round-by-round elimination until unique match found
-// Requires at least 3 rounds of comparison before declaring a match
+// THREE-STEP FILTERING PROCESS:
+// Step 1: Filter out players with < 3 rounds → manual matching
+// Step 2: Filter out players who played for multiple teams → manual matching
+// Step 3: Process remaining players (single team, 3+ rounds)
+// 
+// Matching logic: Progressive round-by-round elimination
+// STOPS IMMEDIATELY when unique match found after minimum rounds
 // No team filtering - compares against ALL RSL players
-// Stats compared:
-//   Outfield: minutes, goals, yellow cards, red cards
-//   Goalkeepers: minutes, saves, yellow cards, red cards
 
 import dbClient from '../database/tidb-client.js';
 import createLogger from '../utils/logger.js';
@@ -155,7 +156,7 @@ async function getRSLGoalkeepers(connection) {
 }
 
 // Find matches for a player using progressive round elimination
-// Requires at least MIN_ROUNDS_TO_MATCH before declaring a match
+// STOPS IMMEDIATELY when a unique match is found after minimum rounds
 function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     const playerName = score365Player.player_name;
     const score365Rounds = score365Player.rounds_data || {};
@@ -165,10 +166,6 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
         .filter(([_, round]) => (round.minutes || 0) > 0)
         .map(([roundNum, _]) => parseInt(roundNum))
         .sort((a, b) => a - b);
-    
-    if (playedRounds.length < MIN_ROUNDS_TO_MATCH) {
-        return { status: 'insufficient', rounds: playedRounds.length };
-    }
     
     logger.debug(`   Found ${playedRounds.length} rounds with minutes for ${playerName}`);
     
@@ -181,9 +178,6 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     let finalMatch = null;
     
     // Progressive elimination through each round
-    // Only declare a match if:
-    // 1. Only one player remains
-    // 2. We've compared at least MIN_ROUNDS_TO_MATCH rounds
     for (let i = 0; i < playedRounds.length; i++) {
         const roundNum = playedRounds[i];
         const score365Round = score365Rounds[roundNum];
@@ -200,9 +194,10 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
         
         logger.debug(`   After round ${roundNum}: ${potentialMatches.length} players remain (${roundsCompared} rounds compared)`);
         
-        // Only consider it a match if we've compared enough rounds
+        // If we have a unique match AND we've compared enough rounds, STOP IMMEDIATELY
         if (potentialMatches.length === 1 && roundsCompared >= MIN_ROUNDS_TO_MATCH) {
             finalMatch = potentialMatches[0];
+            logger.debug(`   ✅ Unique match found after round ${roundNum}!`);
             break;
         }
         
@@ -237,7 +232,6 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     }
     
     // If we have one player but not enough rounds, or multiple players remain
-    // This is ambiguous - needs manual review
     return {
         status: 'ambiguous',
         matches: potentialMatches.map(m => ({
@@ -249,7 +243,7 @@ function findMatches(score365Player, rslPlayersMap, compareFunc, logger) {
     };
 }
 
-// Process a batch of players
+// Process a batch of players with THREE-STEP FILTERING
 async function processPlayerBatch(players, playerType, rslPlayersMap, compareFunc, connection, logger, stats) {
     for (let i = 0; i < players.length; i++) {
         const player = players[i];
@@ -257,12 +251,13 @@ async function processPlayerBatch(players, playerType, rslPlayersMap, compareFun
         const totalPlayers = stats.totalPlayers;
         
         console.log(`\n📋 [${playerNum}/${totalPlayers}] Processing ${playerType}: ${player.player_name} (${player.team_name})`);
-        console.log(`   Total minutes: ${player.total_minutes || 0}, Rounds played: ${player.rounds_played || 0}`);
         
         try {
+            // =========================================================
             // STEP 1: Check if player has any minutes at all
+            // =========================================================
             if (!player.has_played) {
-                console.log(`   ⚠️ Player has no minutes - moving to manual matching`);
+                console.log(`   ⚠️ STEP 1 FILTER: Player has no minutes - moving to manual matching`);
                 
                 await connection.execute(
                     `INSERT INTO matching_names.manual_matching_players 
@@ -287,12 +282,14 @@ async function processPlayerBatch(players, playerType, rslPlayersMap, compareFun
                 continue;
             }
             
+            // =========================================================
             // STEP 2: Check if player has at least MIN_ROUNDS_TO_MATCH rounds
+            // =========================================================
             const roundsWithMinutes = Object.values(player.rounds_data || {})
                 .filter(r => (r.minutes || 0) > 0).length;
             
             if (roundsWithMinutes < MIN_ROUNDS_TO_MATCH) {
-                console.log(`   ⚠️ Player has only ${roundsWithMinutes} rounds - need at least ${MIN_ROUNDS_TO_MATCH}`);
+                console.log(`   ⚠️ STEP 2 FILTER: Player has only ${roundsWithMinutes} rounds - need at least ${MIN_ROUNDS_TO_MATCH} (moving to manual matching)`);
                 
                 await connection.execute(
                     `INSERT INTO matching_names.manual_matching_players 
@@ -317,22 +314,31 @@ async function processPlayerBatch(players, playerType, rslPlayersMap, compareFun
                 continue;
             }
             
-            // STEP 3: Find matches using progressive elimination
-            const result = findMatches(player, rslPlayersMap, compareFunc, logger);
+            // =========================================================
+            // STEP 3: Check if player played for multiple teams
+            // =========================================================
+            // This requires team_name per round in rounds_data
+            // We'll implement this once the tables are updated with team per round
+            /*
+            const teams = new Set();
+            Object.values(player.rounds_data).forEach(round => {
+                if (round.team) teams.add(round.team);
+            });
             
-            if (result.status === 'insufficient') {
-                console.log(`   ⚠️ Player has only ${result.rounds} rounds - need at least ${MIN_ROUNDS_TO_MATCH}`);
+            if (teams.size > 1) {
+                console.log(`   ⚠️ STEP 3 FILTER: Player played for ${teams.size} different teams - moving to manual matching`);
                 
                 await connection.execute(
                     `INSERT INTO matching_names.manual_matching_players 
-                     (player_name, team_name, player_type, reason, total_minutes, rounds_available)
-                     VALUES (?, ?, ?, 'insufficient_rounds', ?, ?)`,
+                     (player_name, team_name, player_type, reason, total_minutes, rounds_available, potential_matches)
+                     VALUES (?, ?, ?, 'multiple_teams', ?, ?, ?)`,
                     [
                         player.player_name || '',
                         player.team_name || '',
                         playerType,
                         player.total_minutes || 0,
-                        player.rounds_played || 0
+                        player.rounds_played || 0,
+                        JSON.stringify(Array.from(teams))
                     ]
                 );
                 
@@ -343,8 +349,20 @@ async function processPlayerBatch(players, playerType, rslPlayersMap, compareFun
                 );
                 
                 stats.manualNeeded++;
-                
-            } else if (result.status === 'no_match') {
+                continue;
+            }
+            */
+            
+            // If we get here, player passed all filters - proceed to matching
+            console.log(`   ✅ PASSED FILTERS: ${roundsWithMinutes} rounds, single team - proceeding to matching`);
+            console.log(`   Total minutes: ${player.total_minutes || 0}`);
+            
+            // =========================================================
+            // STEP 4: Find matches using progressive elimination
+            // =========================================================
+            const result = findMatches(player, rslPlayersMap, compareFunc, logger);
+            
+            if (result.status === 'no_match') {
                 console.log(`   ❌ No matches found after ${result.rounds_compared} rounds`);
                 
                 await connection.execute(
@@ -489,7 +507,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         console.log(`   ✅ Loaded ${Object.keys(rslGks).length} goalkeepers`);
         
         // =========================================================
-        // STEP 2: Get unprocessed players
+        // STEP 2: Get unprocessed players (using hard-coded LIMIT values)
         // =========================================================
         console.log('\n🔍 Step 2: Fetching unprocessed players...');
         
@@ -531,9 +549,9 @@ export default async function runPlayerMatching(runId, testMode = true) {
         }
         
         // =========================================================
-        // STEP 3: Process players
+        // STEP 3: Process players with three-step filtering
         // =========================================================
-        console.log('\n⚙️ Step 3: Processing players...');
+        console.log('\n⚙️ Step 3: Processing players with three-step filtering...');
         
         const stats = {
             processed: 0,
@@ -594,7 +612,7 @@ export default async function runPlayerMatching(runId, testMode = true) {
         
         console.log(`\n   📋 Remaining in queue: ${remainingOutfield[0].count} outfield, ${remainingGks[0].count} GKs`);
         
-        // Update sync log - REMOVED error_count since it doesn't exist in the table
+        // Update sync log - no error_count column
         await connection.execute(
             `UPDATE matching_names.matching_log 
              SET status = ?, players_processed = ?, players_matched = ?, 

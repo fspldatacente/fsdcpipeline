@@ -1,0 +1,49 @@
+name: Process Round Fantasy Stats
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Processing mode'
+        required: true
+        default: 'test'
+        type: choice
+        options:
+          - test
+          - full
+      round:
+        description: 'Round number to process (leave empty for control table default)'
+        required: false
+        type: number
+
+jobs:
+  process-round-fantasy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # Will be 30 for test, 120 for full (but we can't conditional timeout)
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run Process Round Fantasy Stats
+      env:
+        TIDB_HOST: ${{ secrets.TIDB_HOST }}
+        TIDB_PORT: ${{ secrets.TIDB_PORT }}
+        TIDB_USER: ${{ secrets.TIDB_USER }}
+        TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
+        TARGET_ROUND: ${{ github.event.inputs.round }}
+      run: |
+        echo "🚀 Starting Process Round Fantasy Stats"
+        echo "Mode: ${{ github.event.inputs.mode }}"
+        echo "Target round: ${TARGET_ROUND:-'from control table'}"
+        echo "Started at: $(date)"
+        node src/fantasy/process-round-fantasy-stats.js ${{ github.event.inputs.mode }}
+        echo "Completed at: $(date)"
