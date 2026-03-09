@@ -1,10 +1,7 @@
 // src/fantasy/process-round-fantasy-stats.js
-// Processes fantasy stats for a SPECIFIC target round only
-// 1. Reads target_event_id from round_processing_control
-// 2. Checks bootstrap to verify round is finished
-// 3. Processes ALL players for that round (or retries failed ones)
-// 4. Tracks errors in directory_errors_ids
-// 5. Updates control table when round complete
+// Processes fantasy stats for players
+// Normal mode: processes ALL rounds for ALL players (like original get-players-stats)
+// Round override mode: processes ONLY specified round for ALL players
 
 import dbClient from '../database/tidb-client.js';
 import createLogger from '../utils/logger.js';
@@ -18,7 +15,7 @@ const HEADERS = {
 
 // Delays to respect rate limits
 const DELAY_BETWEEN_PLAYERS = 500; // 500ms between players
-const DELAY_BETWEEN_RETRIES = 100; // 100ms between operations
+const DELAY_BETWEEN_ROUNDS = 100; // 100ms between round inserts
 
 // Test mode limits
 const TEST_LIMIT = 100;
@@ -43,9 +40,9 @@ async function fetchBootstrap(logger) {
     }
 }
 
-async function fetchPlayerRoundStats(playerId, targetRound, logger) {
+async function fetchPlayerStats(playerId, logger) {
     const url = `${PLAYER_SUMMARY_URL}/${playerId}/`;
-    logger.debug(`   📥 Fetching stats for player ${playerId}, round ${targetRound}`);
+    logger.debug(`   📥 Fetching stats for player ${playerId}`);
     
     try {
         const response = await fetch(url, { headers: HEADERS });
@@ -58,19 +55,11 @@ async function fetchPlayerRoundStats(playerId, targetRound, logger) {
         
         if (!data.history || !Array.isArray(data.history)) {
             logger.debug(`   ⚠️ No history data for player ${playerId}`);
-            return null;
+            return { history: [] };
         }
         
-        // Find the specific round we want
-        const roundData = data.history.find(r => r.round === targetRound);
-        
-        if (!roundData) {
-            logger.debug(`   ℹ️ Player ${playerId} has no data for round ${targetRound}`);
-            return null;
-        }
-        
-        logger.debug(`   ✅ Found round ${targetRound} data for player ${playerId}`);
-        return roundData;
+        logger.debug(`   ✅ Found ${data.history.length} rounds for player ${playerId}`);
+        return data;
         
     } catch (error) {
         logger.error(`   ❌ Failed to fetch player ${playerId}:`, error.message);
@@ -80,7 +69,7 @@ async function fetchPlayerRoundStats(playerId, targetRound, logger) {
 
 async function savePlayerRoundStats(playerId, roundData, connection, logger) {
     try {
-        // Get player directory info (for team, name, etc.)
+        // Get player directory info
         const [playerInfo] = await connection.execute(
             `SELECT * FROM fantasy_stats.players_directory WHERE id = ?`,
             [playerId]
@@ -169,22 +158,12 @@ async function savePlayerRoundStats(playerId, roundData, connection, logger) {
             ]
         );
         
-        logger.debug(`   ✅ Saved round ${roundData.round} for player ${playerId}`);
         return true;
         
     } catch (error) {
-        logger.error(`   ❌ Failed to save player ${playerId}:`, error.message);
+        logger.error(`   ❌ Failed to save round ${roundData.round} for player ${playerId}:`, error.message);
         throw error;
     }
-}
-
-async function markPlayerAsProcessed(playerId, connection, logger) {
-    // Remove from errors table if present
-    await connection.execute(
-        `DELETE FROM fantasy_stats.directory_errors_ids WHERE id = ?`,
-        [playerId]
-    );
-    logger.debug(`   ✅ Player ${playerId} removed from errors table`);
 }
 
 async function markPlayerAsFailed(playerId, errorMessage, connection, logger) {
@@ -202,7 +181,6 @@ async function markPlayerAsFailed(playerId, errorMessage, connection, logger) {
              WHERE id = ?`,
             [errorMessage.substring(0, 500), playerId]
         );
-        logger.debug(`   ⚠️ Updated error record for player ${playerId} (retry #${existing[0].retry_count + 1})`);
     } else {
         // Insert new record
         await connection.execute(
@@ -210,72 +188,28 @@ async function markPlayerAsFailed(playerId, errorMessage, connection, logger) {
              VALUES (?, ?, NOW(), 1)`,
             [playerId, errorMessage.substring(0, 500)]
         );
-        logger.debug(`   ⚠️ Added player ${playerId} to errors table`);
     }
 }
 
-async function getControlTable(connection, logger) {
-    const [rows] = await connection.execute(
-        `SELECT target_event_id, round_completed, processed_fixtures 
-         FROM fantasy_stats.round_processing_control 
-         WHERE id = 1`
-    );
-    
-    if (rows.length === 0) {
-        throw new Error('round_processing_control table not initialized. Run setup first.');
-    }
-    
-    logger.info(`📋 Control table: target_event_id=${rows[0].target_event_id}, completed=${rows[0].round_completed}`);
-    return rows[0];
-}
-
-async function updateControlTable(targetEventId, roundCompleted, connection, logger) {
+async function markPlayerAsProcessed(playerId, connection, logger) {
+    // Remove from errors table if present
     await connection.execute(
-        `UPDATE fantasy_stats.round_processing_control 
-         SET target_event_id = ?, round_completed = ?, last_processed_at = NOW()
-         WHERE id = 1`,
-        [targetEventId, roundCompleted]
+        `DELETE FROM fantasy_stats.directory_errors_ids WHERE id = ?`,
+        [playerId]
     );
-    logger.info(`📋 Control table updated: target_event_id=${targetEventId}, completed=${roundCompleted}`);
 }
 
-async function getPlayersToProcess(connection, testMode, includeErrors, logger) {
-    let players = [];
-    
-    // First, get players from errors table if we're including them
-    if (includeErrors) {
-        const [errorPlayers] = await connection.execute(
-            `SELECT id FROM fantasy_stats.directory_errors_ids ORDER BY failed_at ASC`
-        );
-        logger.info(`📋 Found ${errorPlayers.length} players in errors table to retry`);
-        players = errorPlayers.map(p => ({ id: p.id, fromErrors: true }));
-    }
-    
-    // Then get unprocessed players (excluding those already in errors)
-    const placeholders = players.length > 0 ? players.map(() => '?').join(',') : 'NULL';
-    const [unprocessed] = await connection.execute(
-        `SELECT id FROM fantasy_stats.players_directory 
-         WHERE id NOT IN (SELECT id FROM fantasy_stats.players_fantasy_stats WHERE round = ?)
-         AND id NOT IN (${placeholders})
-         ORDER BY id
-         ${testMode ? `LIMIT ${TEST_LIMIT - players.length}` : ''}`,
-        testMode ? [players[0]?.target_event_id || 25, ...players.map(p => p.id)] : []
-    );
-    
-    players.push(...unprocessed.map(p => ({ id: p.id, fromErrors: false })));
-    
-    logger.info(`📋 Total players to process: ${players.length} (${players.filter(p => p.fromErrors).length} retries, ${players.filter(p => !p.fromErrors).length} new)`);
-    return players;
-}
-
-export default async function processRoundFantasyStats(runId, testMode = true) {
+export default async function processRoundFantasyStats(runId, testMode = true, targetRoundOverride = null) {
     const logger = createLogger('process-round-fantasy-stats');
     const mode = testMode ? 'TEST MODE' : 'FULL RUN';
+    const roundInfo = targetRoundOverride ? `(OVERRIDE: Round ${targetRoundOverride} only)` : '(ALL rounds)';
     
     console.log('\n' + '='.repeat(60));
-    console.log(`🏁 STARTING PROCESS ROUND FANTASY STATS (${mode})`);
+    console.log(`🏁 STARTING PROCESS FANTASY STATS ${roundInfo}`);
     console.log('='.repeat(60));
     console.log(`   Run ID: ${runId}`);
+    console.log(`   Mode: ${mode}`);
+    console.log(`   Target: ${targetRoundOverride ? `Round ${targetRoundOverride} only` : 'All rounds'}`);
     console.log(`   Time: ${new Date().toISOString()}`);
     console.log('-'.repeat(60));
     
@@ -287,118 +221,107 @@ export default async function processRoundFantasyStats(runId, testMode = true) {
         
         // Create sync log entry
         await connection.execute(
-            `INSERT INTO fantasy_stats.fantasy_sync_log (run_id, function_name, status)
-             VALUES (?, 'process-round-fantasy-stats', 'running')`,
-            [runId]
+            `INSERT INTO fantasy_stats.fantasy_sync_log (run_id, function_name, status, target_round)
+             VALUES (?, 'process-round-fantasy-stats', 'running', ?)`,
+            [runId, targetRoundOverride || 0]
         );
         
-        // STEP 1: Get control table
-        logger.info('\n📋 STEP 1: Reading control table...');
-        const control = await getControlTable(connection, logger);
-        const targetEventId = control.target_event_id;
+        // Get list of players to process (all players from directory)
+        const [players] = await connection.execute(
+            `SELECT id FROM fantasy_stats.players_directory ORDER BY id`
+        );
         
-        // STEP 2: Check bootstrap for round status
-        logger.info('\n📋 STEP 2: Checking round status via bootstrap...');
-        const bootstrap = await fetchBootstrap(logger);
-        
-        const targetEvent = bootstrap.events?.find(e => e.id === targetEventId);
-        
-        if (!targetEvent) {
-            throw new Error(`Event ID ${targetEventId} not found in bootstrap`);
-        }
-        
-        logger.info(`   Round ${targetEventId}: finished=${targetEvent.finished}, deadline=${targetEvent.deadline_time}`);
-        
-        // If round is not finished, exit early
-        if (!targetEvent.finished) {
-            logger.warn(`⚠️ Round ${targetEventId} is not finished yet. Exiting.`);
-            
-            await connection.execute(
-                `UPDATE fantasy_stats.fantasy_sync_log 
-                 SET status = 'skipped', completed_at = NOW()
-                 WHERE run_id = ?`,
-                [runId]
-            );
-            
-            console.log('\n✅ EARLY EXIT - Round not finished');
-            return { success: true, processed: 0, errors: 0, skipped: true };
-        }
-        
-        // STEP 3: Get players to process
-        logger.info('\n📋 STEP 3: Building player list...');
-        const players = await getPlayersToProcess(connection, testMode, true, logger);
+        logger.info(`📋 Total players in directory: ${players.length}`);
         
         if (players.length === 0) {
-            logger.info('📭 No players to process - all done for this round');
-            
-            // If this round is complete, update control table to next round
-            if (control.round_completed === false) {
-                await updateControlTable(targetEventId, true, connection, logger);
-                logger.info(`✅ Round ${targetEventId} marked as completed`);
-                
-                // Optionally increment to next round
-                // await updateControlTable(targetEventId + 1, false, connection, logger);
-            }
+            logger.warn('⚠️ No players found in directory!');
             
             await connection.execute(
                 `UPDATE fantasy_stats.fantasy_sync_log 
-                 SET status = 'success', completed_at = NOW()
+                 SET status = 'failed', completed_at = NOW()
                  WHERE run_id = ?`,
                 [runId]
             );
             
-            return { success: true, processed: 0, errors: 0 };
+            return { success: false, processed: 0, errors: 0 };
         }
         
-        // STEP 4: Process each player
-        logger.info(`\n📋 STEP 4: Processing ${players.length} players for round ${targetEventId}...`);
+        // Apply test mode limit
+        const playersToProcess = testMode ? players.slice(0, TEST_LIMIT) : players;
+        logger.info(`📋 Players to process in this run: ${playersToProcess.length}`);
         
+        // Process each player
         let processed = 0;
         let errors = 0;
-        let failedPlayers = [];
+        let totalRoundsSaved = 0;
+        const failedPlayers = [];
         
-        for (let i = 0; i < players.length; i++) {
-            const player = players[i];
+        for (let i = 0; i < playersToProcess.length; i++) {
+            const playerId = playersToProcess[i].id;
             
-            console.log(`\n   [${i + 1}/${players.length}] Player ID: ${player.id} ${player.fromErrors ? '(retry)' : ''}`);
+            console.log(`\n   [${i + 1}/${playersToProcess.length}] Player ID: ${playerId}`);
             
             try {
-                // Fetch round data for this player
-                const roundData = await fetchPlayerRoundStats(player.id, targetEventId, logger);
+                // Fetch player stats
+                const playerData = await fetchPlayerStats(playerId, logger);
                 
-                if (roundData) {
-                    // Save to database
-                    await savePlayerRoundStats(player.id, roundData, connection, logger);
-                    await markPlayerAsProcessed(player.id, connection, logger);
-                    processed++;
+                if (playerData.history && playerData.history.length > 0) {
+                    let roundsForThisPlayer = 0;
+                    
+                    // Determine which rounds to process
+                    const roundsToProcess = targetRoundOverride 
+                        ? playerData.history.filter(r => r.round === targetRoundOverride)  // Only specified round
+                        : playerData.history;  // All rounds
+                    
+                    if (targetRoundOverride && roundsToProcess.length === 0) {
+                        logger.debug(`   ℹ️ Player ${playerId} has no data for round ${targetRoundOverride}`);
+                    }
+                    
+                    // Save each round
+                    for (const round of roundsToProcess) {
+                        await savePlayerRoundStats(playerId, round, connection, logger);
+                        roundsForThisPlayer++;
+                        totalRoundsSaved++;
+                        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_ROUNDS));
+                    }
+                    
+                    if (roundsForThisPlayer > 0) {
+                        logger.debug(`   ✅ Saved ${roundsForThisPlayer} rounds for player ${playerId}`);
+                    }
+                    
+                    // Remove from errors table if it was there
+                    await markPlayerAsProcessed(playerId, connection, logger);
+                    
                 } else {
-                    // No data for this round - still mark as processed (no stats to save)
-                    await markPlayerAsProcessed(player.id, connection, logger);
-                    processed++;
-                    logger.debug(`   ℹ️ No data for player ${player.id} in round ${targetEventId} - marked as processed`);
+                    logger.debug(`   ℹ️ No history data for player ${playerId}`);
+                    // Still remove from errors table (nothing to process)
+                    await markPlayerAsProcessed(playerId, connection, logger);
                 }
                 
-                // Delay to respect rate limits
+                processed++;
+                
+                // Delay between players
                 await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_PLAYERS));
                 
             } catch (error) {
-                logger.error(`   ❌ Failed to process player ${player.id}`);
+                logger.error(`   ❌ Failed to process player ${playerId}`);
                 errors++;
-                failedPlayers.push({ id: player.id, error: error.message });
+                failedPlayers.push({ id: playerId, error: error.message });
                 
                 // Add to errors table for retry
-                await markPlayerAsFailed(player.id, error.message, connection, logger);
+                await markPlayerAsFailed(playerId, error.message, connection, logger);
                 
                 // Continue to next player
             }
         }
         
-        // STEP 5: Summary
+        // Summary
         console.log('\n' + '='.repeat(60));
-        console.log('📊 ROUND PROCESSING COMPLETE');
+        console.log('📊 PROCESSING COMPLETE');
         console.log('='.repeat(60));
-        console.log(`   Target round: ${targetEventId}`);
+        console.log(`   Target: ${targetRoundOverride ? `Round ${targetRoundOverride}` : 'All rounds'}`);
         console.log(`   Players processed successfully: ${processed}`);
+        console.log(`   Total rounds saved: ${totalRoundsSaved}`);
         console.log(`   Errors: ${errors}`);
         
         if (failedPlayers.length > 0) {
@@ -411,52 +334,24 @@ export default async function processRoundFantasyStats(runId, testMode = true) {
             }
         }
         
-        // Check if all players are processed
-        const [remainingForRound] = await connection.execute(
-            `SELECT COUNT(*) as count FROM fantasy_stats.players_directory 
-             WHERE id NOT IN (SELECT id FROM fantasy_stats.players_fantasy_stats WHERE round = ?)`,
-            [targetEventId]
-        );
-        
-        const roundComplete = remainingForRound[0].count === 0;
-        logger.info(`\n📋 Round ${targetEventId} completion status: ${roundComplete ? 'COMPLETE' : 'INCOMPLETE'}`);
-        logger.info(`   Players remaining for this round: ${remainingForRound[0].count}`);
-        
-        // Update control table if round is complete
-        if (roundComplete && !control.round_completed) {
-            await updateControlTable(targetEventId, true, connection, logger);
-            logger.info(`✅ Round ${targetEventId} marked as completed`);
-            
-            // Check if we should auto-increment to next round
-            const [nextRoundCheck] = await connection.execute(
-                `SELECT COUNT(*) as count FROM fantasy_stats.players_fantasy_stats WHERE round = ?`,
-                [targetEventId + 1]
-            );
-            
-            if (nextRoundCheck[0].count === 0) {
-                logger.info(`🔄 Auto-incrementing target to round ${targetEventId + 1}`);
-                await updateControlTable(targetEventId + 1, false, connection, logger);
-            }
-        }
-        
         // Update sync log
         await connection.execute(
             `UPDATE fantasy_stats.fantasy_sync_log 
              SET status = ?, players_processed = ?, rounds_processed = ?, errors = ?, completed_at = NOW()
              WHERE run_id = ?`,
-            [errors === 0 ? 'success' : 'partial', processed, 1, errors, runId]
+            [errors === 0 ? 'success' : 'partial', processed, totalRoundsSaved, errors, runId]
         );
         
-        console.log('\n✅ PROCESS ROUND FANTASY STATS COMPLETED');
+        console.log('\n✅ PROCESS FANTASY STATS COMPLETED');
         console.log('='.repeat(60));
         
         return {
             success: errors === 0,
-            targetRound: targetEventId,
+            targetRound: targetRoundOverride || 'all',
             processed,
+            roundsSaved: totalRoundsSaved,
             errors,
-            roundComplete,
-            remainingForRound: remainingForRound[0].count
+            failedPlayers
         };
         
     } catch (error) {
@@ -483,12 +378,27 @@ export default async function processRoundFantasyStats(runId, testMode = true) {
 if (import.meta.url === `file://${process.argv[1]}`) {
     const runId = `process-round-${Date.now()}`;
     
-    // Parse command line argument for test mode
-    // Usage: node process-round-fantasy-stats.js [test|full]
+    // Parse command line arguments
+    // Usage: node process-round-fantasy-stats.js [test|full] [round]
+    // Examples:
+    //   node process-round-fantasy-stats.js test        (test mode, all rounds)
+    //   node process-round-fantasy-stats.js full        (full mode, all rounds)
+    //   node process-round-fantasy-stats.js test 25     (test mode, round 25 only)
+    //   node process-round-fantasy-stats.js full 26     (full mode, round 26 only)
+    
     const mode = process.argv[2] || 'test';
     const testMode = mode === 'test';
     
-    processRoundFantasyStats(runId, testMode).catch(error => {
+    let targetRoundOverride = null;
+    if (process.argv[3]) {
+        targetRoundOverride = parseInt(process.argv[3], 10);
+        if (isNaN(targetRoundOverride)) {
+            console.error('❌ Invalid round number. Please provide a valid number.');
+            process.exit(1);
+        }
+    }
+    
+    processRoundFantasyStats(runId, testMode, targetRoundOverride).catch(error => {
         console.error('❌ Fatal error:', error);
         process.exit(1);
     });

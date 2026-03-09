@@ -12,14 +12,14 @@ on:
           - test
           - full
       round:
-        description: 'Round number to process (leave empty for control table default)'
+        description: 'Round number to process (leave empty for ALL rounds)'
         required: false
         type: number
 
 jobs:
   process-round-fantasy:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # Will be 30 for test, 120 for full (but we can't conditional timeout)
+    timeout-minutes: 120
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -39,11 +39,15 @@ jobs:
         TIDB_PORT: ${{ secrets.TIDB_PORT }}
         TIDB_USER: ${{ secrets.TIDB_USER }}
         TIDB_PASSWORD: ${{ secrets.TIDB_PASSWORD }}
-        TARGET_ROUND: ${{ github.event.inputs.round }}
       run: |
         echo "🚀 Starting Process Round Fantasy Stats"
         echo "Mode: ${{ github.event.inputs.mode }}"
-        echo "Target round: ${TARGET_ROUND:-'from control table'}"
+        if [ -n "${{ github.event.inputs.round }}" ]; then
+          echo "Target round: ${{ github.event.inputs.round }} (OVERRIDE)"
+          node src/fantasy/process-round-fantasy-stats.js ${{ github.event.inputs.mode }} ${{ github.event.inputs.round }}
+        else
+          echo "Target round: ALL rounds"
+          node src/fantasy/process-round-fantasy-stats.js ${{ github.event.inputs.mode }}
+        fi
         echo "Started at: $(date)"
-        node src/fantasy/process-round-fantasy-stats.js ${{ github.event.inputs.mode }}
         echo "Completed at: $(date)"
